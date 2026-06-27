@@ -130,6 +130,34 @@ class TargetRoleService:
         assert refreshed is not None
         return self._orm_to_schema(refreshed)
 
+    async def preview_role_requirements(self, role_title: str) -> TargetRoleRequirements:
+        """Query the AI for a role's skill requirements without saving anything.
+
+        Used by the frontend to preview a role before the user commits to it.
+
+        Raises:
+            InvalidRoleTitleError: If role title is empty or exceeds 100 characters.
+        """
+        self._validate_role_title(role_title)
+
+        ai_skills = await self._ai_provider.identify_role_skills(role_title)
+        is_recognized = len(ai_skills) >= 5
+
+        skills = [
+            SkillRequirementSchema(
+                skill_name=skill.skill_name,
+                required_proficiency=skill.required_proficiency,
+                category=skill.category,
+            )
+            for skill in ai_skills
+        ]
+
+        return TargetRoleRequirements(
+            role_title=role_title,
+            skills=skills,
+            recognized=is_recognized,
+        )
+
     async def get_target_role_requirements(
         self, user_id: UUID
     ) -> TargetRoleRequirements:

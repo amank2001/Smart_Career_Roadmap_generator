@@ -71,13 +71,22 @@ async def set_target_role(
     summary="Get skill requirements for target role",
 )
 async def get_requirements(
+    role_title: str | None = None,
     user_id: UUID = Depends(get_current_user_id),
     service: TargetRoleService = Depends(get_target_role_service),
 ) -> TargetRoleRequirements:
-    """Retrieve the skill requirements for the user's current target role.
+    """Retrieve skill requirements for a role.
+
+    When ``role_title`` is provided, the AI is queried directly and the result
+    is returned without touching the database (preview / search mode).
+
+    When ``role_title`` is omitted, the user's already-saved target role is
+    returned instead.
 
     Requirements: 2.3
     """
+    if role_title:
+        return await service.preview_role_requirements(role_title=role_title.strip())
     return await service.get_target_role_requirements(user_id=user_id)
 
 
