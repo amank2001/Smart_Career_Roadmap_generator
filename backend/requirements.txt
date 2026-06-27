@@ -1,0 +1,35 @@
+# Core API framework
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# Data validation
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# File handling / resume parsing
+python-multipart==0.0.20
+pdfplumber==0.11.4
+python-docx==1.1.2
+
+# AI / HTTP
+httpx==0.28.1
+tenacity==9.0.0
+openai==1.57.4
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0
+hypothesis==6.122.3
+httpx==0.28.1
+
+# Utilities
+python-dotenv==1.0.1
