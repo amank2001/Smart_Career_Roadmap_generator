@@ -1,8 +1,0 @@
-{
-  "/_not-found/page": "app/_not-found/page.js",
-  "/profile/page": "app/profile/page.js",
-  "/target-role/page": "app/target-role/page.js",
-  "/skill-gap/page": "app/skill-gap/page.js",
-  "/roadmap/page": "app/roadmap/page.js",
-  "/progress/page": "app/progress/page.js"
-}
