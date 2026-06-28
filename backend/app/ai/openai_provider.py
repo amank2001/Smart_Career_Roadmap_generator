@@ -275,14 +275,24 @@ class OpenAIProvider:
             items: list[dict] = (
                 data.get("topics", data) if isinstance(data, dict) else data
             )
+            # Build a mapping from AI-generated IDs to real UUIDs so
+            # prerequisite references stay consistent across topics.
+            id_mapping: dict[str, str] = {}
+            for item in items:
+                original_id = str(item.get("id", ""))
+                real_id = str(uuid.uuid4())
+                id_mapping[original_id] = real_id
+                item["id"] = real_id
+
             topics = []
             for item in items:
-                # Ensure id is a UUID
-                if "id" not in item or not item["id"]:
-                    item["id"] = str(uuid.uuid4())
-                # Convert prerequisite strings to UUIDs
+                # Remap prerequisite IDs to real UUIDs; drop any that
+                # don't correspond to a topic in this set.
+                raw_prereqs = item.get("prerequisites", [])
                 item["prerequisites"] = [
-                    str(p) for p in item.get("prerequisites", [])
+                    id_mapping[str(p)]
+                    for p in raw_prereqs
+                    if str(p) in id_mapping
                 ]
                 topics.append(RoadmapTopic(**item))
             return topics
@@ -323,8 +333,8 @@ class OpenAIProvider:
             )
             questions = []
             for item in items:
-                if "id" not in item or not item["id"]:
-                    item["id"] = str(uuid.uuid4())
+                # Always generate a proper UUID regardless of what AI returns
+                item["id"] = str(uuid.uuid4())
                 questions.append(InterviewQuestion(**item))
             return questions
         except (KeyError, TypeError, ValueError) as exc:
@@ -389,8 +399,8 @@ class OpenAIProvider:
             )
             projects = []
             for item in items:
-                if "id" not in item or not item["id"]:
-                    item["id"] = str(uuid.uuid4())
+                # Always generate a proper UUID regardless of what AI returns
+                item["id"] = str(uuid.uuid4())
                 projects.append(ProjectSuggestion(**item))
             return projects
         except (KeyError, TypeError, ValueError) as exc:
