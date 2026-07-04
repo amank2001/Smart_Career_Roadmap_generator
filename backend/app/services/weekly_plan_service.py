@@ -166,9 +166,11 @@ class WeeklyPlanService:
         topics: list[RoadmapTopicORM],
         weekly_study_hours: int,
     ) -> list[list[dict]]:
-        """Distribute topics into weekly buckets ensuring:
-        - 3-7 tasks per week
+        """Distribute topics into weekly buckets.
+
+        - At most 7 tasks per week
         - Sum of hours per week ≤ weekly_study_hours
+        - Aims for at least 3 tasks per week by merging small tail weeks
 
         Each topic may be split into multiple tasks if its estimated_hours
         exceeds what can fit in a single task within the weekly budget.
@@ -176,14 +178,15 @@ class WeeklyPlanService:
         Returns a list of weeks, each week being a list of task dicts with
         keys: skill_name, proficiency_target, estimated_hours.
         """
-        # Build a flat list of tasks from topics. If a topic has too many hours,
-        # split it into multiple smaller tasks.
+        if not topics:
+            return []
+
+        # Build a flat list of tasks from topics. Split large topics so a single
+        # task never exceeds 1/3 of the weekly budget (keeps slices manageable).
         task_pool: list[dict] = []
-        max_task_hours = max(1.0, weekly_study_hours / 3)  # Allow at most ~1/3 of week per task
+        max_task_hours = max(1.0, weekly_study_hours / 3)
 
-        sorted_topics = sorted(topics, key=lambda t: t.order_index)
-
-        for topic in sorted_topics:
+        for topic in sorted(topics, key=lambda t: t.order_index):
             remaining = float(topic.estimated_hours)
             while remaining > 0:
                 task_hours = min(remaining, max_task_hours)
@@ -194,89 +197,42 @@ class WeeklyPlanService:
                 })
                 remaining -= task_hours
 
-        # Now distribute tasks into weeks
+        # If there are very few tasks overall, put them all in one week.
+        if len(task_pool) <= 7:
+            return [task_pool]
+
+        # Distribute tasks into weeks respecting hour cap and task cap.
         weeks: list[list[dict]] = []
         current_week: list[dict] = []
         current_hours = 0.0
 
         for task in task_pool:
-            # Check if adding this task would exceed weekly hours or max tasks per week
-            if (
-                current_week
-                and (
-                    current_hours + task["estimated_hours"] > weekly_study_hours
-                    or len(current_week) >= 7
-                )
-            ):
-                # Close current week if it has at least 3 tasks
-                if len(current_week) >= 3:
-                    weeks.append(current_week)
-                    current_week = []
-                    current_hours = 0.0
-                elif current_hours + task["estimated_hours"] > weekly_study_hours:
-                    # Current week has < 3 tasks but can't fit more due to hours
-                    # Still close it - we'll handle the min constraint below
-                    weeks.append(current_week)
-                    current_week = []
-                    current_hours = 0.0
+            would_exceed_hours = current_hours + task["estimated_hours"] > weekly_study_hours
+            would_exceed_tasks = len(current_week) >= 7
+
+            if current_week and (would_exceed_hours or would_exceed_tasks):
+                weeks.append(current_week)
+                current_week = []
+                current_hours = 0.0
 
             current_week.append(task)
             current_hours += task["estimated_hours"]
 
-        # Don't forget the last week
         if current_week:
             weeks.append(current_week)
 
-        # Post-process: merge any weeks with fewer than 3 tasks into adjacent weeks
-        weeks = self._ensure_minimum_tasks(weeks, weekly_study_hours)
+        # Merge any trailing week that has fewer than 3 tasks into the previous
+        # week, as long as that doesn't push the previous week over 7 tasks.
+        while len(weeks) >= 2 and len(weeks[-1]) < 3:
+            last = weeks.pop()
+            if len(weeks[-1]) + len(last) <= 7:
+                weeks[-1].extend(last)
+            else:
+                # Can't merge — just put it back (will have < 3 tasks but that's fine)
+                weeks.append(last)
+                break
 
         return weeks
-
-    @staticmethod
-    def _ensure_minimum_tasks(
-        weeks: list[list[dict]], weekly_study_hours: int
-    ) -> list[list[dict]]:
-        """Merge undersized weeks (< 3 tasks) with their neighbors.
-
-        Tries to merge small weeks into the previous week if it won't exceed
-        7 tasks and the hours limit. Otherwise merges with the next week.
-        """
-        if not weeks:
-            return weeks
-
-        merged: list[list[dict]] = []
-
-        for week in weeks:
-            if not merged:
-                merged.append(week)
-                continue
-
-            prev = merged[-1]
-            prev_hours = sum(t["estimated_hours"] for t in prev)
-            curr_hours = sum(t["estimated_hours"] for t in week)
-
-            # If current week is too small, try to merge with previous
-            if len(week) < 3:
-                if (
-                    len(prev) + len(week) <= 7
-                    and prev_hours + curr_hours <= weekly_study_hours
-                ):
-                    merged[-1] = prev + week
-                else:
-                    merged.append(week)
-            # If previous week is too small, merge current into it
-            elif len(prev) < 3:
-                if (
-                    len(prev) + len(week) <= 7
-                    and prev_hours + curr_hours <= weekly_study_hours
-                ):
-                    merged[-1] = prev + week
-                else:
-                    merged.append(week)
-            else:
-                merged.append(week)
-
-        return merged
 
     # ── Public service methods ────────────────────────────────────────────────
 

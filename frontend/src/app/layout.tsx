@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
+import { AppDataProvider } from "@/context/AppDataContext";
 import { AuthGuard } from "@/components/layout/AuthGuard";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 
@@ -18,9 +19,11 @@ export default function RootLayout({
     <html lang="en">
       <body className="min-h-screen bg-gray-50 text-gray-900 antialiased">
         <AuthProvider>
-          <AuthGuard>
-            <DashboardLayout>{children}</DashboardLayout>
-          </AuthGuard>
+          <AppDataProvider>
+            <AuthGuard>
+              <DashboardLayout>{children}</DashboardLayout>
+            </AuthGuard>
+          </AppDataProvider>
         </AuthProvider>
       </body>
     </html>

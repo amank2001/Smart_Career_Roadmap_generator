@@ -1,8 +1,4 @@
-import type {
-  InterviewSession,
-  AnswerFeedback,
-  GenerateInterviewRequest,
-} from "@/types/interview";
+import type { InterviewSession, AnswerFeedback } from "@/types/interview";
 import { jsonAuthHeaders } from "./client";
 
 const API_BASE = "/api/interview";
@@ -17,26 +13,29 @@ export class InterviewApiError extends Error {
   }
 }
 
+async function handleResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    const detail = body?.detail ?? body;
+    const code = detail?.error ?? "UNKNOWN";
+    const message = detail?.message ?? "An unexpected error occurred";
+    throw new InterviewApiError(code, message);
+  }
+  return response.json();
+}
+
 /**
  * Generate mock interview questions.
+ * The backend automatically fetches target role and progress from the DB.
  * POST /api/interview/generate
  */
-export async function generateInterviewQuestions(
-  data?: GenerateInterviewRequest
-): Promise<InterviewSession> {
+export async function generateInterviewQuestions(): Promise<InterviewSession> {
   const response = await fetch(`${API_BASE}/generate`, {
     method: "POST",
     headers: jsonAuthHeaders(),
-    body: JSON.stringify(data ?? {}),
+    // No body needed — backend resolves context from JWT
   });
-
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    const error = body?.detail ?? body ?? { error: "UNKNOWN", message: "An unexpected error occurred" };
-    throw new InterviewApiError(error.error, error.message);
-  }
-
-  return response.json();
+  return handleResponse<InterviewSession>(response);
 }
 
 /**
@@ -50,14 +49,7 @@ export async function getInterviewSession(
     method: "GET",
     headers: jsonAuthHeaders(),
   });
-
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    const error = body?.detail ?? body ?? { error: "UNKNOWN", message: "An unexpected error occurred" };
-    throw new InterviewApiError(error.error, error.message);
-  }
-
-  return response.json();
+  return handleResponse<InterviewSession>(response);
 }
 
 /**
@@ -71,14 +63,7 @@ export async function submitAnswer(
   const response = await fetch(`${API_BASE}/questions/${questionId}/answer`, {
     method: "POST",
     headers: jsonAuthHeaders(),
-    body: JSON.stringify({ user_answer: userAnswer }),
+    body: JSON.stringify({ answer: userAnswer }),  // backend expects "answer"
   });
-
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    const error = body?.detail ?? body ?? { error: "UNKNOWN", message: "An unexpected error occurred" };
-    throw new InterviewApiError(error.error, error.message);
-  }
-
-  return response.json();
+  return handleResponse<AnswerFeedback>(response);
 }

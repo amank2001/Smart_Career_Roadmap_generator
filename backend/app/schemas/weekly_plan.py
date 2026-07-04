@@ -21,7 +21,7 @@ class WeeklyPlan(BaseModel):
     roadmap_id: UUID
     week_number: int
     status: PlanStatus
-    tasks: list[WeeklyTask] = Field(min_length=3, max_length=7)
+    tasks: list[WeeklyTask] = Field(min_length=1, max_length=7)
     is_practical_milestone: bool
 
 

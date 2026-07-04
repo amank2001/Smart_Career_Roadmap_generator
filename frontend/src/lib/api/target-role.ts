@@ -30,6 +30,30 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 /**
+ * Get the current user's saved target role (returns null if none set yet).
+ * GET /api/target-role/requirements (no role_title param = returns saved role)
+ */
+export async function getTargetRole(): Promise<TargetRole | null> {
+  const response = await fetch(`${API_BASE}/requirements`, {
+    method: "GET",
+    headers: jsonAuthHeaders(),
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    const detail = body?.detail ?? body;
+    const code = detail?.error ?? "UNKNOWN";
+    const message = detail?.message ?? "An unexpected error occurred";
+    throw new TargetRoleApiError(code, message);
+  }
+  // /requirements returns TargetRoleRequirements shape; wrap into TargetRole-compatible
+  const data = await response.json();
+  // If no target role saved, backend returns empty/404-style; treat as null
+  if (!data || !data.role_title) return null;
+  return data as unknown as TargetRole;
+}
+
+/**
  * Set the target role for the authenticated user.
  * POST /api/target-role
  */

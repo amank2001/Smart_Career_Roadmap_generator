@@ -21,6 +21,7 @@ from app.schemas.common import ProficiencyLevel
 from app.schemas.interview import (
     AnswerFeedback as AnswerFeedbackSchema,
     InterviewQuestion as InterviewQuestionSchema,
+    InterviewSessionResponse,
     ProgressInfo,
 )
 from app.schemas.target_role import TargetRole
@@ -41,69 +42,63 @@ class InterviewQuestionNotFoundError(DomainError):
     message = "Interview question not found"
 
 
-# ── Roles that typically do NOT involve system design ──────────────────────────
+# ── Interview category logic ───────────────────────────────────────────────────
+# Determines which question categories are appropriate for a given role.
+# Categories: knowledge, behavioral, case-study
+#
+# 'case-study' applies when the role involves analytical problem-solving,
+# scenario reasoning, design decisions, or applied domain judgment —
+# this is broad and covers many fields beyond software engineering.
 
-_NON_SYSTEM_DESIGN_ROLES: set[str] = {
-    "data analyst",
-    "data entry",
-    "graphic designer",
-    "ui designer",
-    "ux designer",
-    "ux researcher",
-    "content writer",
-    "copywriter",
-    "marketing manager",
-    "project manager",
-    "product manager",
-    "hr manager",
-    "recruiter",
-    "business analyst",
-    "sales representative",
-    "accountant",
-    "financial analyst",
-    "teacher",
-    "trainer",
-    "customer support",
-    "technical writer",
+# Roles where case-study questions are NOT useful
+_NO_CASE_STUDY_ROLES: set[str] = {
+    "data entry operator",
+    "receptionist",
+    "cashier",
+    "administrative assistant",
+    "file clerk",
 }
 
-# Roles that typically involve system design
-_SYSTEM_DESIGN_ROLES_KEYWORDS: list[str] = [
-    "engineer",
-    "architect",
-    "developer",
-    "devops",
-    "sre",
-    "platform",
-    "infrastructure",
-    "backend",
-    "fullstack",
-    "full-stack",
-    "full stack",
-    "cloud",
-    "distributed",
-    "systems",
+# Keywords that signal case-study questions ARE appropriate
+_CASE_STUDY_KEYWORDS: list[str] = [
+    # Technology
+    "engineer", "architect", "developer", "devops", "platform", "infrastructure",
+    # Science & Medicine
+    "scientist", "researcher", "analyst", "physician", "doctor", "nurse",
+    "pharmacist", "chemist", "biologist", "physicist", "geologist", "ecologist",
+    # Law & Policy
+    "lawyer", "attorney", "counsel", "paralegal", "judge", "policy",
+    # Finance & Commerce
+    "accountant", "auditor", "financial", "actuary", "economist", "banker",
+    "investment", "consultant", "strategist",
+    # Management & Business
+    "manager", "director", "executive", "product", "project", "operations",
+    "supply chain", "logistics",
+    # Design & Creative
+    "designer", "architect", "ux", "ui", "art director", "creative director",
+    # Education
+    "teacher", "professor", "educator", "instructor", "curriculum",
+    # Social Sciences
+    "psychologist", "therapist", "counselor", "social worker", "sociologist",
 ]
 
 
-def _role_involves_system_design(role_title: str) -> bool:
-    """Determine if a target role typically involves system design questions.
+def _role_involves_case_study(role_title: str) -> bool:
+    """Return True if the role warrants case-study / scenario questions.
 
-    Returns True if the role is technical enough to warrant system design questions.
+    Works across all domains — not just software.
     """
     normalized = role_title.lower().strip()
 
-    # Explicit non-system-design roles
-    if normalized in _NON_SYSTEM_DESIGN_ROLES:
+    if normalized in _NO_CASE_STUDY_ROLES:
         return False
 
-    # Check for system-design keywords in the role title
-    for keyword in _SYSTEM_DESIGN_ROLES_KEYWORDS:
+    for keyword in _CASE_STUDY_KEYWORDS:
         if keyword in normalized:
             return True
 
-    # Default: include system design for unrecognized roles (lean towards inclusion)
-    return False
+    # Default: include case-study for unrecognised roles
+    return True
 
 
 def _determine_difficulty(progress_percentage: int) -> ProficiencyLevel:
@@ -145,6 +140,15 @@ class InterviewPreparerService:
     async def generate_questions(
         self, target_role: TargetRole, user_progress: ProgressInfo
     ) -> list[InterviewQuestionSchema]:
+        """Generate mock interview questions (returns list only — legacy method)."""
+        session_response = await self.generate_questions_with_session(
+            target_role=target_role, user_progress=user_progress
+        )
+        return session_response.questions
+
+    async def generate_questions_with_session(
+        self, target_role: TargetRole, user_progress: ProgressInfo
+    ) -> InterviewSessionResponse:
         """Generate mock interview questions tailored to the target role and user progress.
 
         - Creates an InterviewSession in the DB
@@ -159,7 +163,7 @@ class InterviewPreparerService:
             user_progress: The user's overall progress (percentage, completed/total plans).
 
         Returns:
-            A list of InterviewQuestion schemas (5-20 questions).
+            An InterviewSessionResponse with session id, created_at, and questions.
         """
         # 1. Create an InterviewSession
         session_id = uuid.uuid4()
@@ -173,8 +177,8 @@ class InterviewPreparerService:
         # 2. Determine difficulty from progress percentage
         difficulty = _determine_difficulty(user_progress.percentage)
 
-        # 3. Determine if system-design questions should be included
-        include_system_design = _role_involves_system_design(target_role.role_title)
+        # 3. Determine if case-study questions should be included
+        include_case_study = _role_involves_case_study(target_role.role_title)
 
         # 4. Gather skills list from target role
         skills = [s.skill_name for s in target_role.skills]
@@ -186,13 +190,13 @@ class InterviewPreparerService:
             difficulty=difficulty,
         )
 
-        # 6. Filter out system-design questions if role doesn't involve it
-        if not include_system_design:
-            ai_questions = [q for q in ai_questions if q.category != "system-design"]
+        # 6. Filter out case-study questions if not appropriate for this role
+        if not include_case_study:
+            ai_questions = [q for q in ai_questions if q.category != "case-study"]
 
         # 7. Validate question count (5-20) and category coverage
         ai_questions = self._ensure_valid_question_set(
-            ai_questions, include_system_design
+            ai_questions, include_case_study
         )
 
         # 8. Persist questions to DB
@@ -220,7 +224,18 @@ class InterviewPreparerService:
             )
 
         await self._db.flush()
-        return question_schemas
+
+        # Reload session to get server-generated created_at
+        result = await self._db.execute(
+            select(InterviewSessionORM).where(InterviewSessionORM.id == session_id)
+        )
+        session_refreshed = result.scalar_one()
+
+        return InterviewSessionResponse(
+            id=session_id,
+            questions=question_schemas,
+            created_at=session_refreshed.created_at,
+        )
 
     async def evaluate_answer(
         self, question_id: UUID, user_answer: str
@@ -280,14 +295,21 @@ class InterviewPreparerService:
     async def get_session_questions(
         self, session_id: UUID, user_id: UUID
     ) -> list[InterviewQuestionSchema]:
-        """Get all questions for a specific interview session.
+        """Get all questions for a specific interview session (legacy list return)."""
+        session_response = await self.get_session(session_id=session_id, user_id=user_id)
+        return session_response.questions
+
+    async def get_session(
+        self, session_id: UUID, user_id: UUID
+    ) -> InterviewSessionResponse:
+        """Get an interview session with all its questions.
 
         Args:
             session_id: The interview session ID.
             user_id: The user's ID (for ownership verification).
 
         Returns:
-            List of InterviewQuestion schemas.
+            InterviewSessionResponse with session metadata and questions.
 
         Raises:
             InterviewSessionNotFoundError: If the session doesn't exist or doesn't belong to the user.
@@ -304,35 +326,31 @@ class InterviewPreparerService:
         if session is None:
             raise InterviewSessionNotFoundError()
 
-        return [self._question_orm_to_schema(q) for q in session.questions]
+        return InterviewSessionResponse(
+            id=session.id,
+            questions=[self._question_orm_to_schema(q) for q in session.questions],
+            created_at=session.created_at,
+        )
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
     @staticmethod
     def _ensure_valid_question_set(
-        questions: list, include_system_design: bool
+        questions: list, include_case_study: bool
     ) -> list:
         """Ensure the question set meets validity constraints:
         - Between 5 and 20 questions
-        - At least one question per applicable category
-
-        If category coverage is missing, this is a best-effort check
-        (the AI provider should already produce diverse categories).
+        - At least one question per applicable category (knowledge, behavioral, case-study)
         """
         # Enforce max of 20 questions
         if len(questions) > 20:
             questions = questions[:20]
 
-        # Check category coverage
-        categories_present = {q.category for q in questions}
-        required_categories = {"technical", "behavioral"}
-        if include_system_design:
-            required_categories.add("system-design")
+        # Required categories vary by role type
+        # (If a required category is missing, we still return what we have —
+        # the AI provider is expected to produce diverse output.)
+        required_categories = {"knowledge", "behavioral"}
+        if include_case_study:
+            required_categories.add("case-study")
 
-        # If a required category is missing, we still return what we have
-        # (the AI provider is expected to produce diverse output, and we
-        # don't want to fail the whole request over a missing category)
-
-        # Enforce minimum of 5 questions (if AI returned fewer, return what we have)
-        # The AI provider contract says 5-20 so this is defensive.
         return questions

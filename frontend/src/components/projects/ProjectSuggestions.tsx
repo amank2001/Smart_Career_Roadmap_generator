@@ -12,34 +12,31 @@ import { ProjectCard } from "./ProjectCard";
 type ViewState =
   | { status: "idle" }
   | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "success"; projects: ProjectSuggestion[] }
+  | { status: "error"; message: string; code: string }
+  | { status: "success"; projects: ProjectSuggestion[]; planId: string }
   | { status: "skipped" };
 
-interface ProjectSuggestionsProps {
-  planId: string;
-}
-
-export function ProjectSuggestions({ planId }: ProjectSuggestionsProps) {
+export function ProjectSuggestions() {
   const [viewState, setViewState] = useState<ViewState>({ status: "idle" });
   const [isSkipping, setIsSkipping] = useState(false);
 
   const fetchProjects = useCallback(async () => {
     setViewState({ status: "loading" });
     try {
-      const projects = await getProjectSuggestions(planId);
-      setViewState({ status: "success", projects });
+      const result = await getProjectSuggestions();
+      setViewState({ status: "success", projects: result.projects, planId: result.planId });
     } catch (err) {
       if (err instanceof ProjectApiError) {
-        setViewState({ status: "error", message: err.message });
+        setViewState({ status: "error", message: err.message, code: err.code });
       } else {
         setViewState({
           status: "error",
+          code: "UNKNOWN",
           message: "An unexpected error occurred while loading projects.",
         });
       }
     }
-  }, [planId]);
+  }, []);
 
   useEffect(() => {
     fetchProjects();
@@ -57,16 +54,18 @@ export function ProjectSuggestions({ planId }: ProjectSuggestionsProps) {
   }
 
   async function handleSkipAll() {
+    if (viewState.status !== "success") return;
     setIsSkipping(true);
     try {
-      await skipAllProjects(planId);
+      await skipAllProjects(viewState.planId);
       setViewState({ status: "skipped" });
     } catch (err) {
       if (err instanceof ProjectApiError) {
-        setViewState({ status: "error", message: err.message });
+        setViewState({ status: "error", code: err.code, message: err.message });
       } else {
         setViewState({
           status: "error",
+          code: "UNKNOWN",
           message: "An unexpected error occurred.",
         });
       }
@@ -75,18 +74,21 @@ export function ProjectSuggestions({ planId }: ProjectSuggestionsProps) {
     }
   }
 
-  const allDismissedOrCompleted =
+  const activeProjects =
+    viewState.status === "success"
+      ? viewState.projects.filter((p) => !p.completed && !p.dismissed)
+      : [];
+
+  const allHandled =
     viewState.status === "success" &&
     viewState.projects.length > 0 &&
-    viewState.projects.every((p) => p.completed || p.dismissed);
+    activeProjects.length === 0;
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-gray-800">
-          Project Suggestions
-        </h2>
-        {viewState.status === "success" && !allDismissedOrCompleted && (
+        <h2 className="text-xl font-semibold text-gray-800">Project Suggestions</h2>
+        {viewState.status === "success" && !allHandled && activeProjects.length > 0 && (
           <button
             onClick={handleSkipAll}
             disabled={isSkipping}
@@ -116,11 +118,23 @@ export function ProjectSuggestions({ planId }: ProjectSuggestionsProps) {
         </div>
       )}
 
-      {viewState.status === "error" && (
-        <div
-          className="rounded-lg border border-red-200 bg-red-50 p-6"
-          role="alert"
-        >
+      {viewState.status === "error" && viewState.code === "NO_WEEKLY_PLAN" && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-6" role="alert">
+          <h3 className="text-lg font-semibold text-amber-800">No Roadmap Yet</h3>
+          <p className="mt-2 text-sm text-amber-700">
+            Generate your learning roadmap first to get personalized project suggestions.
+          </p>
+          <a
+            href="/roadmap"
+            className="mt-4 inline-block rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+          >
+            Go to Roadmap
+          </a>
+        </div>
+      )}
+
+      {viewState.status === "error" && viewState.code !== "NO_WEEKLY_PLAN" && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-6" role="alert">
           <h3 className="text-lg font-semibold text-red-800">Error</h3>
           <p className="mt-2 text-sm text-red-700">{viewState.message}</p>
           <button
@@ -156,7 +170,7 @@ export function ProjectSuggestions({ planId }: ProjectSuggestionsProps) {
         </div>
       )}
 
-      {allDismissedOrCompleted && (
+      {allHandled && (
         <div
           className="rounded-lg border border-green-200 bg-green-50 p-4 text-center"
           role="status"

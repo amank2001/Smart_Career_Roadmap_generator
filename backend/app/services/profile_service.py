@@ -93,44 +93,75 @@ class ProfileService:
     # ── Public service methods ─────────────────────────────────────────────────
 
     async def create_profile(self, user_id: UUID, data: CreateProfileInput) -> Profile:
-        """Create a new profile and its associated skills in the database.
+        """Create or replace the profile and its associated skills in the database.
 
+        If a profile already exists for this user, it is updated in-place (upsert).
         Raises domain errors if validation fails.
         """
         self._validate_create_input(data)
 
-        profile_orm = ProfileORM(
-            id=uuid.uuid4(),
-            user_id=user_id,
-            current_job_title=data.current_job_title,
-            years_of_experience=data.years_of_experience,
-        )
-        profile_orm.is_complete = self.is_profile_complete_from_fields(
-            job_title=data.current_job_title,
-            skills=data.skills,
-        )
+        existing = await self._get_profile_orm(user_id)
 
-        self._db.add(profile_orm)
-        # Flush to get the generated profile id before creating skills
-        await self._db.flush()
-
-        skill_orms = [
-            SkillORM(
-                id=uuid.uuid4(),
-                profile_id=profile_orm.id,
-                name=skill.name,
-                proficiency_level=skill.proficiency_level,
+        if existing is not None:
+            # Profile already exists — update it in-place instead of inserting a duplicate
+            existing.current_job_title = data.current_job_title
+            existing.years_of_experience = data.years_of_experience
+            existing.is_complete = self.is_profile_complete_from_fields(
+                job_title=data.current_job_title,
+                skills=data.skills,
             )
-            for skill in data.skills
-        ]
-        for skill_orm in skill_orms:
-            self._db.add(skill_orm)
 
-        await self._db.flush()
+            # Replace skills
+            for old_skill in list(existing.skills):
+                await self._db.delete(old_skill)
+            await self._db.flush()
+
+            new_skills = [
+                SkillORM(
+                    id=uuid.uuid4(),
+                    profile_id=existing.id,
+                    name=skill.name,
+                    proficiency_level=skill.proficiency_level,
+                )
+                for skill in data.skills
+            ]
+            for skill_orm in new_skills:
+                self._db.add(skill_orm)
+
+            await self._db.flush()
+        else:
+            profile_orm = ProfileORM(
+                id=uuid.uuid4(),
+                user_id=user_id,
+                current_job_title=data.current_job_title,
+                years_of_experience=data.years_of_experience,
+            )
+            profile_orm.is_complete = self.is_profile_complete_from_fields(
+                job_title=data.current_job_title,
+                skills=data.skills,
+            )
+
+            self._db.add(profile_orm)
+            # Flush to get the generated profile id before creating skills
+            await self._db.flush()
+
+            skill_orms = [
+                SkillORM(
+                    id=uuid.uuid4(),
+                    profile_id=profile_orm.id,
+                    name=skill.name,
+                    proficiency_level=skill.proficiency_level,
+                )
+                for skill in data.skills
+            ]
+            for skill_orm in skill_orms:
+                self._db.add(skill_orm)
+
+            await self._db.flush()
 
         # Reload with skills eager-loaded to build the response schema
         refreshed = await self._get_profile_orm(user_id)
-        assert refreshed is not None  # just created
+        assert refreshed is not None
         return self._orm_to_schema(refreshed)
 
     async def update_profile(self, user_id: UUID, data: UpdateProfileInput) -> Profile:

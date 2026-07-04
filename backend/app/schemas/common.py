@@ -5,5 +5,5 @@ from typing import Literal
 ProficiencyLevel = Literal["beginner", "intermediate", "advanced"]
 GapCategory = Literal["critical", "important", "nice-to-have"]
 PlanStatus = Literal["completed", "in-progress", "upcoming"]
-ResourceType = Literal["course", "book", "tutorial", "documentation"]
-QuestionCategory = Literal["technical", "behavioral", "system-design"]
+ResourceType = Literal["article", "tutorial", "documentation", "video"]
+QuestionCategory = Literal["knowledge", "behavioral", "case-study"]

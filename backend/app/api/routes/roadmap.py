@@ -11,6 +11,7 @@ from app.api.deps import get_current_user_id
 from app.core.database import get_db
 from app.schemas.roadmap import LearningRoadmap
 from app.services.roadmap_service import RoadmapService
+from app.services.weekly_plan_service import WeeklyPlanService
 
 router = APIRouter()
 
@@ -37,6 +38,14 @@ def get_roadmap_service(
     return RoadmapService(db=db, ai_provider=ai_provider)
 
 
+def get_weekly_plan_service(
+    db: AsyncSession = Depends(get_db),
+) -> WeeklyPlanService:
+    """Dependency that constructs a WeeklyPlanService."""
+    ai_provider = OpenAIProvider()
+    return WeeklyPlanService(db=db, ai_provider=ai_provider)
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 
@@ -49,22 +58,27 @@ async def generate_roadmap(
     body: GenerateRoadmapRequest = GenerateRoadmapRequest(),
     user_id: UUID = Depends(get_current_user_id),
     service: RoadmapService = Depends(get_roadmap_service),
+    plan_service: WeeklyPlanService = Depends(get_weekly_plan_service),
 ) -> LearningRoadmap:
     """Generate an AI-powered learning roadmap based on the skill gap analysis.
 
     Accepts optional weekly_hours (1-40). Defaults to 10 if not provided.
     Requires a completed skill gap analysis.
+    Automatically generates weekly plans from the new roadmap.
 
     Domain exceptions (InvalidWeeklyHoursError, NoGapAnalysisError) are handled
     by the registered exception handlers automatically.
 
     Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6
     """
-    return await service.generate_roadmap(user_id=user_id, weekly_hours=body.weekly_hours)
+    roadmap = await service.generate_roadmap(user_id=user_id, weekly_hours=body.weekly_hours)
+    # Auto-generate weekly plans so /weekly-plans is immediately populated
+    await plan_service.generate_weekly_plans(roadmap_id=roadmap.id, user_id=user_id)
+    return roadmap
 
 
 @router.get(
-    "/",
+    "",
     response_model=LearningRoadmap,
     summary="Get the current learning roadmap",
 )

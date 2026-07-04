@@ -1,5 +1,5 @@
 /** Types for the resource attached to each roadmap topic */
-export type ResourceType = "course" | "book" | "tutorial" | "documentation";
+export type ResourceType = "article" | "tutorial" | "documentation" | "video";
 
 export interface LearningResource {
   title: string;
@@ -35,5 +35,5 @@ export interface GenerateRoadmapInput {
 
 /** Input for updating weekly study hours */
 export interface UpdateWeeklyHoursInput {
-  weekly_study_hours: number;
+  weekly_hours: number;
 }

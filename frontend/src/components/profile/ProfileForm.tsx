@@ -11,9 +11,10 @@ interface ProfileFormProps {
     yearsOfExperience: number;
     skills: string[];
   };
+  submitLabel?: string;
 }
 
-export function ProfileForm({ onSubmit, isSubmitting, initialData }: ProfileFormProps) {
+export function ProfileForm({ onSubmit, isSubmitting, initialData, submitLabel }: ProfileFormProps) {
   const [jobTitle, setJobTitle] = useState(initialData?.currentJobTitle ?? "");
   const [yearsOfExperience, setYearsOfExperience] = useState(
     initialData?.yearsOfExperience?.toString() ?? ""
@@ -173,7 +174,7 @@ export function ProfileForm({ onSubmit, isSubmitting, initialData }: ProfileForm
         disabled={isSubmitting}
         className="w-full rounded-md bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {isSubmitting ? "Creating Profile..." : "Create Profile"}
+        {isSubmitting ? "Saving..." : (submitLabel ?? "Create Profile")}
       </button>
     </form>
   );

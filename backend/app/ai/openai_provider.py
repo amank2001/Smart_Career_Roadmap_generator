@@ -196,11 +196,16 @@ class OpenAIProvider:
     async def identify_role_skills(self, role_title: str) -> list[SkillRequirement]:
         """Return at least 5 skills required for the given role."""
         system = (
-            "You are a career coach with deep knowledge of role requirements. "
+            "You are a career coach with expertise across all professional fields — "
+            "including but not limited to science, technology, engineering, medicine, "
+            "law, finance, commerce, arts, design, education, social sciences, "
+            "humanities, trades, and any other domain. "
             "Return ONLY valid JSON: an object with a 'skills' key containing "
             "an array of skill objects. Each object must have: "
             "skill_name (string), required_proficiency (beginner|intermediate|advanced), "
-            "category (critical|important|nice-to-have)."
+            "category (critical|important|nice-to-have). "
+            "The skills must be realistic and specific to the role provided, "
+            "regardless of industry or domain."
         )
         user = f"List the skills and competencies required for: {role_title}"
         raw = await self._chat(system, user)
@@ -220,12 +225,16 @@ class OpenAIProvider:
     ) -> list[SkillGap]:
         """Compare user skills against target role requirements."""
         system = (
-            "You are a skill gap analysis expert. "
+            "You are a skill gap analysis expert covering all professional domains — "
+            "science, arts, commerce, technology, healthcare, law, education, trades, "
+            "and any other field. "
             "Return ONLY valid JSON: an object with a 'gaps' key containing "
             "an array of gap objects. Each object must have: "
             "skill_name (string), category (critical|important|nice-to-have), "
             "current_proficiency (beginner|intermediate|advanced or null), "
-            "required_proficiency (beginner|intermediate|advanced)."
+            "required_proficiency (beginner|intermediate|advanced). "
+            "Base your analysis purely on the skills and requirements provided, "
+            "without assuming any particular industry."
         )
         current = [s.model_dump() for s in current_skills]
         target = [r.model_dump() for r in target_skills]
@@ -251,17 +260,59 @@ class OpenAIProvider:
     ) -> list[RoadmapTopic]:
         """Generate an ordered learning roadmap for the given gaps."""
         system = (
-            "You are a learning roadmap designer. "
+            "You are a learning roadmap designer. It is currently 2026. "
+            "You work across ALL professional domains — science, technology, engineering, "
+            "medicine, law, finance, commerce, arts, design, education, social sciences, "
+            "humanities, trades, and any other field. "
             "Return ONLY valid JSON: an object with a 'topics' key containing "
             "an array of topic objects. Each object must have: "
             "id (UUID string), skill_name, category (critical|important|nice-to-have), "
             "proficiency_target (beginner|intermediate|advanced), "
             "prerequisites (array of UUID strings), "
-            "resources (array of {title, type, url} with type in "
-            "course|book|tutorial|documentation — at least 2 per topic), "
-            "estimated_hours (integer), order (integer starting at 1). "
+            "resources (array of {title, type, url} — exactly 2-3 per topic), "
+            "estimated_hours (integer), order (integer starting at 1).\n\n"
+            "RESOURCE RULES:\n"
+            "1. type must be one of: article, tutorial, documentation, video\n"
+            "2. Only suggest FREE, publicly accessible reference material. "
+            "No paid courses, no paywalled content.\n"
+            "3. Match resources to the actual domain of the skill — "
+            "do NOT default to software/tech resources for non-tech skills. "
+            "Examples by domain:\n"
+            "   - Science/Medicine: PubMed (pubmed.ncbi.nlm.nih.gov), "
+            "Khan Academy (khanacademy.org), OpenStax (openstax.org), "
+            "NIH resources (nih.gov), WHO guidelines (who.int)\n"
+            "   - Law/Policy: Cornell LII (law.cornell.edu), "
+            "official government legislation portals\n"
+            "   - Finance/Commerce/Accounting: Investopedia (investopedia.com), "
+            "IRS/HMRC/official tax authority docs, "
+            "AccountingCoach (accountingcoach.com)\n"
+            "   - Arts/Design/Creative: Canva Design School (designschool.canva.com), "
+            "Adobe tutorials (helpx.adobe.com), "
+            "The Art Story (theartstory.org), "
+            "Smithsonian resources (si.edu)\n"
+            "   - Education/Teaching: UNESCO resources (unesco.org), "
+            "Edutopia (edutopia.org)\n"
+            "   - Social Sciences/Psychology: APA (apa.org), "
+            "Simply Psychology (simplypsychology.org)\n"
+            "   - Business/Management: Harvard Business Review free articles "
+            "(hbr.org), MIT OpenCourseWare (ocw.mit.edu)\n"
+            "   - Technology/Software (only when the skill is actually technical): "
+            "official docs (developer.mozilla.org, docs.python.org, etc.), "
+            "freeCodeCamp (freecodecamp.org), roadmap.sh, "
+            "The Odin Project (theodinproject.com), "
+            "YouTube channels: Fireship, Traversy Media, TechWorld with Nana\n"
+            "   - General learning: Wikipedia (en.wikipedia.org) for foundational "
+            "concepts, MIT OpenCourseWare (ocw.mit.edu), "
+            "YouTube educational channels relevant to the field\n"
+            "4. Every URL must be a real, currently working link as of 2026. "
+            "Do NOT invent URLs or hallucinate paths.\n"
+            "5. For YouTube, link to a channel or playlist page, not individual "
+            "video URLs that may expire.\n"
+            "6. Do NOT link to Medium, personal blogs, or content that goes stale.\n"
+            "7. All content must be 2025-2026 relevant. Do not reference deprecated "
+            "or discontinued material.\n"
             "Order topics so prerequisites appear before dependents, "
-            "and critical gaps are ordered before important before nice-to-have."
+            "critical gaps before important before nice-to-have."
         )
         gap_data = [g.model_dump() for g in gaps]
         user = (
@@ -294,6 +345,10 @@ class OpenAIProvider:
                     for p in raw_prereqs
                     if str(p) in id_mapping
                 ]
+                # Normalise legacy resource types from old AI responses
+                for resource in item.get("resources", []):
+                    if resource.get("type") in ("course", "book"):
+                        resource["type"] = "article"
                 topics.append(RoadmapTopic(**item))
             return topics
         except (KeyError, TypeError, ValueError) as exc:
@@ -309,21 +364,31 @@ class OpenAIProvider:
     ) -> list[InterviewQuestion]:
         """Generate 5-20 mock interview questions for the given role."""
         system = (
-            "You are an experienced technical interviewer. "
+            "You are an experienced interviewer and career coach covering ALL professional "
+            "domains — science, technology, medicine, law, finance, commerce, arts, design, "
+            "education, social sciences, trades, and any other field. "
             "Return ONLY valid JSON: an object with a 'questions' key containing "
             "an array of question objects. Each object must have: "
             "id (UUID string), question (string), "
-            "category (technical|behavioral|system-design), "
+            "category (knowledge|behavioral|case-study), "
             "difficulty (beginner|intermediate|advanced), "
             "model_answer (string), evaluation_criteria (array of strings, min 1). "
+            "Category meanings: "
+            "'knowledge' = domain-specific knowledge or conceptual questions relevant to the role "
+            "(replaces 'technical' — applies to any field, e.g. legal principles, accounting rules, "
+            "scientific concepts, design theory); "
+            "'behavioral' = past experience, situational, soft-skills questions; "
+            "'case-study' = scenario-based problem solving relevant to the role "
+            "(e.g. a business case, a patient scenario, a legal scenario, an engineering problem). "
             "Include at least one question from each applicable category. "
-            "Generate between 5 and 20 questions."
+            "Generate between 5 and 20 questions. "
+            "All questions must be realistic and relevant to the specific role provided."
         )
         user = (
             f"Role: {role}\n"
             f"Relevant skills: {json.dumps(skills)}\n"
             f"Difficulty level: {difficulty}\n"
-            "Generate mock interview questions."
+            "Generate mock interview questions appropriate for this role."
         )
         raw = await self._chat(system, user)
         data = _parse_json(raw, "generate_interview_questions")
@@ -333,6 +398,10 @@ class OpenAIProvider:
             )
             questions = []
             for item in items:
+                # Normalise legacy category names from old DB rows
+                cat_remap = {"technical": "knowledge", "system-design": "case-study"}
+                if item.get("category") in cat_remap:
+                    item["category"] = cat_remap[item["category"]]
                 # Always generate a proper UUID regardless of what AI returns
                 item["id"] = str(uuid.uuid4())
                 questions.append(InterviewQuestion(**item))
@@ -378,18 +447,25 @@ class OpenAIProvider:
     ) -> list[ProjectSuggestion]:
         """Suggest at least two hands-on projects for the given skills."""
         system = (
-            "You are a project mentor specializing in practical skill development. "
+            "You are a project mentor covering ALL professional domains — "
+            "science, technology, medicine, law, finance, commerce, arts, design, "
+            "education, social sciences, trades, and any other field. "
             "Return ONLY valid JSON: an object with a 'projects' key containing "
             "an array of project objects. Each object must have: "
             "id (UUID string), title (string), objectives (array of strings), "
-            "deliverables (array of strings), technologies (array of strings), "
+            "deliverables (array of strings), technologies (array of strings — "
+            "use 'tools', 'methods', or 'materials' relevant to the domain; "
+            "for non-tech fields this might be software tools, lab equipment, "
+            "artistic media, financial models, legal frameworks, etc.), "
             "estimated_weeks (integer 1-4), complexity (beginner|intermediate|advanced). "
-            "Return at least 2 projects."
+            "Projects must be practical, hands-on, and appropriate for the specific "
+            "domain of the skills provided. Return at least 2 projects."
         )
         user = (
             f"Skills: {json.dumps(skills)}\n"
             f"Skill level: {level}\n"
-            "Suggest practical projects to build these skills."
+            "Suggest practical projects to build these skills. "
+            "Make the projects relevant to the actual field these skills belong to."
         )
         raw = await self._chat(system, user)
         data = _parse_json(raw, "suggest_projects")

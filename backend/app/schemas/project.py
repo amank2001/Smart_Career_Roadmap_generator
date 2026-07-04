@@ -15,3 +15,6 @@ class ProjectSuggestion(BaseModel):
     technologies: list[str]
     estimated_weeks: int = Field(ge=1, le=4)
     complexity: ProficiencyLevel
+    completed: bool = False
+    outcome_description: str | None = None
+    dismissed: bool = False

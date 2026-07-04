@@ -45,10 +45,10 @@ class SkillGap(BaseModel):
 
 
 class LearningResource(BaseModel):
-    """A learning resource (course, book, tutorial, or documentation)."""
+    """A learning resource (article, tutorial, documentation, or video)."""
 
     title: str
-    type: Literal["course", "book", "tutorial", "documentation"]
+    type: Literal["article", "tutorial", "documentation", "video"]
     url: str | None = None
 
 
@@ -70,7 +70,7 @@ class InterviewQuestion(BaseModel):
 
     id: UUID
     question: str
-    category: Literal["technical", "behavioral", "system-design"]
+    category: Literal["knowledge", "behavioral", "case-study"]
     difficulty: ProficiencyLevel
     model_answer: str
     evaluation_criteria: list[str] = Field(min_length=1)

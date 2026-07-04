@@ -40,6 +40,9 @@ class ProjectSuggesterService:
             technologies=project_orm.technologies,
             estimated_weeks=project_orm.estimated_weeks,
             complexity=project_orm.complexity,
+            completed=project_orm.completed,
+            outcome_description=project_orm.outcome_description,
+            dismissed=project_orm.dismissed,
         )
 
     # ── Private helpers ───────────────────────────────────────────────────────
@@ -67,6 +70,46 @@ class ProjectSuggesterService:
         return skills
 
     # ── Public service methods ────────────────────────────────────────────────
+
+    async def get_best_plan_id_for_user(self, user_id: UUID) -> UUID | None:
+        """Return the most appropriate plan ID to use for project suggestions.
+
+        Prefers the current in-progress plan. Falls back to the first
+        upcoming plan, then the most recently completed plan.
+
+        Returns None if the user has no weekly plans at all.
+        """
+        from app.models.roadmap import LearningRoadmap as LearningRoadmapORM
+        from app.models.weekly_plan import WeeklyPlan as WeeklyPlanORM
+        from sqlalchemy.orm import selectinload
+
+        # Get the user's latest roadmap
+        roadmap_result = await self._db.execute(
+            select(LearningRoadmapORM)
+            .where(LearningRoadmapORM.user_id == user_id)
+            .order_by(LearningRoadmapORM.created_at.desc())
+            .limit(1)
+        )
+        roadmap = roadmap_result.scalar_one_or_none()
+        if roadmap is None:
+            return None
+
+        # Try in-progress first, then upcoming, then completed
+        for preferred_status in ("in-progress", "upcoming", "completed"):
+            plan_result = await self._db.execute(
+                select(WeeklyPlanORM)
+                .where(
+                    WeeklyPlanORM.roadmap_id == roadmap.id,
+                    WeeklyPlanORM.status == preferred_status,
+                )
+                .order_by(WeeklyPlanORM.week_number)
+                .limit(1)
+            )
+            plan = plan_result.scalar_one_or_none()
+            if plan is not None:
+                return plan.id
+
+        return None
 
     async def suggest_projects(
         self, weekly_plan_id: UUID, user_skill_level: ProficiencyLevel

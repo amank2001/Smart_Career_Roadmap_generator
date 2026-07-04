@@ -1,5 +1,6 @@
 """Pydantic models for mock interview preparation."""
 
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -26,3 +27,10 @@ class ProgressInfo(BaseModel):
     percentage: int
     completed_plans: int
     total_plans: int
+
+
+class InterviewSessionResponse(BaseModel):
+    """Wraps generated questions together with the session metadata."""
+    id: UUID
+    questions: list[InterviewQuestion]
+    created_at: datetime

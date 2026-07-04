@@ -122,6 +122,12 @@ class RoadmapService:
     @staticmethod
     def _roadmap_orm_to_schema(roadmap_orm: LearningRoadmapORM) -> LearningRoadmap:
         """Convert a LearningRoadmapORM instance to a LearningRoadmap schema."""
+        # Map legacy resource types stored in the DB to the current allowed values
+        _TYPE_REMAP: dict[str, str] = {
+            "course": "article",
+            "book": "article",
+        }
+
         topics = [
             RoadmapTopic(
                 id=topic.id,
@@ -132,7 +138,7 @@ class RoadmapService:
                 resources=[
                     LearningResource(
                         title=res.title,
-                        type=res.type,
+                        type=_TYPE_REMAP.get(res.type, res.type),
                         url=res.url,
                     )
                     for res in topic.resources

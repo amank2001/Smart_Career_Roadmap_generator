@@ -3,15 +3,15 @@
 import type { InterviewQuestion, InterviewCategory, DifficultyLevel } from "@/types/interview";
 
 const CATEGORY_STYLES: Record<InterviewCategory, string> = {
-  technical: "bg-purple-100 text-purple-800",
+  knowledge: "bg-purple-100 text-purple-800",
   behavioral: "bg-green-100 text-green-800",
-  "system-design": "bg-orange-100 text-orange-800",
+  "case-study": "bg-orange-100 text-orange-800",
 };
 
 const CATEGORY_LABELS: Record<InterviewCategory, string> = {
-  technical: "Technical",
+  knowledge: "Knowledge",
   behavioral: "Behavioral",
-  "system-design": "System Design",
+  "case-study": "Case Study",
 };
 
 const DIFFICULTY_STYLES: Record<DifficultyLevel, string> = {

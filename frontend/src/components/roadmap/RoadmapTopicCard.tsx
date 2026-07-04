@@ -15,10 +15,13 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 const RESOURCE_TYPE_ICONS: Record<string, string> = {
-  course: "\uD83C\uDF93",
-  book: "\uD83D\uDCD6",
-  tutorial: "\uD83D\uDCBB",
-  documentation: "\uD83D\uDCC4",
+  article: "📰",
+  tutorial: "💻",
+  documentation: "📄",
+  video: "▶️",
+  // legacy fallbacks from old roadmaps
+  course: "📰",
+  book: "📰",
 };
 
 function ResourceItem({ resource }: { resource: LearningResource }) {

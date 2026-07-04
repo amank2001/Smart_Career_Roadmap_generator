@@ -4,6 +4,7 @@ from typing import Union
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.openai_provider import OpenAIProvider
@@ -13,6 +14,14 @@ from app.schemas.weekly_plan import RoadmapCompletionSummary, WeeklyPlan
 from app.services.weekly_plan_service import WeeklyPlanService
 
 router = APIRouter()
+
+
+# ── Response wrapper ────────────────────────────────────────────────────────────
+
+
+class AdjustDelayResult(BaseModel):
+    plans: list[WeeklyPlan]
+    message: str
 
 
 # ── Dependency helpers ─────────────────────────────────────────────────────────
@@ -104,13 +113,13 @@ async def complete_task(
 
 @router.post(
     "/adjust",
-    response_model=list[WeeklyPlan],
+    response_model=AdjustDelayResult,
     summary="Adjust remaining plans for delay",
 )
 async def adjust_plan(
     user_id: UUID = Depends(get_current_user_id),
     service: WeeklyPlanService = Depends(get_weekly_plan_service),
-) -> list[WeeklyPlan]:
+) -> AdjustDelayResult:
     """Adjust remaining weekly plans to accommodate incomplete tasks from the current plan.
 
     Redistributes incomplete tasks from the current in-progress plan into
@@ -122,4 +131,8 @@ async def adjust_plan(
 
     Requirements: 5.5
     """
-    return await service.adjust_for_delay(user_id=user_id)
+    plans = await service.adjust_for_delay(user_id=user_id)
+    return AdjustDelayResult(
+        plans=plans,
+        message="Plans have been adjusted to accommodate your delay.",
+    )

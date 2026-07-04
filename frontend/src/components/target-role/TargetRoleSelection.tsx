@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { SkillRequirement, TargetRole } from "@/types/target-role";
 import { SkillRequirementsList } from "./SkillRequirementsList";
 import { CustomRoleForm } from "./CustomRoleForm";
@@ -12,22 +12,41 @@ import {
   setCustomRole,
   TargetRoleApiError,
 } from "@/lib/api/target-role";
+import { useAppData } from "@/context/AppDataContext";
 
 type FlowState =
-  | "input" // Entering role title
-  | "loading" // Fetching requirements
-  | "recognized" // Role recognized, showing skills
-  | "unrecognized" // Role not recognized, showing custom form
-  | "success"; // Role saved successfully
+  | "loading-existing"  // Checking for a saved role
+  | "saved"             // A role is already saved — show summary
+  | "input"             // Entering role title
+  | "loading"           // Fetching requirements
+  | "recognized"        // Role recognized, showing skills
+  | "unrecognized"      // Role not recognized, showing custom form
+  | "success";          // Role saved successfully
 
 export function TargetRoleSelection() {
-  const [flowState, setFlowState] = useState<FlowState>("input");
+  const { targetRole, isLoadingTargetRole, refreshTargetRole } = useAppData();
+
+  const [flowState, setFlowState] = useState<FlowState>("loading-existing");
   const [roleTitle, setRoleTitle] = useState("");
   const [roleTitleError, setRoleTitleError] = useState<string | null>(null);
   const [skills, setSkills] = useState<SkillRequirement[]>([]);
   const [apiError, setApiError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [savedRole, setSavedRole] = useState<TargetRole | null>(null);
+
+  // Sync with context — when the context finishes loading, decide what to show
+  useEffect(() => {
+    if (isLoadingTargetRole) {
+      setFlowState("loading-existing");
+      return;
+    }
+    if (targetRole) {
+      setSavedRole(targetRole);
+      setFlowState("saved");
+    } else {
+      setFlowState("input");
+    }
+  }, [targetRole, isLoadingTargetRole]);
 
   async function handleSearchRole(e: React.FormEvent) {
     e.preventDefault();
@@ -65,11 +84,10 @@ export function TargetRoleSelection() {
     setIsSubmitting(true);
 
     try {
-      // First set the target role
-      const role = await setTargetRole(roleTitle.trim());
-      // Then update with any modified skills
+      await setTargetRole(roleTitle.trim());
       const updated = await updateTargetRoleSkills(skills);
       setSavedRole(updated);
+      await refreshTargetRole();
       setFlowState("success");
     } catch (err) {
       if (err instanceof TargetRoleApiError) {
@@ -96,6 +114,7 @@ export function TargetRoleSelection() {
         responsibilities,
       });
       setSavedRole(role);
+      await refreshTargetRole();
       setFlowState("success");
     } catch (err) {
       if (err instanceof TargetRoleApiError) {
@@ -108,6 +127,14 @@ export function TargetRoleSelection() {
     }
   }
 
+  function handleStartEditing() {
+    setFlowState("input");
+    setRoleTitle("");
+    setSkills([]);
+    setApiError(null);
+    setRoleTitleError(null);
+  }
+
   function handleReset() {
     setFlowState("input");
     setRoleTitle("");
@@ -117,37 +144,131 @@ export function TargetRoleSelection() {
     setSavedRole(null);
   }
 
+  // Loading spinner while we check for a saved role
+  if (flowState === "loading-existing") {
+    return (
+      <div className="flex items-center justify-center py-12" role="status" aria-live="polite">
+        <div className="text-center">
+          <div
+            className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600"
+            aria-hidden="true"
+          />
+          <p className="mt-3 text-sm text-gray-600">Loading your target role...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show saved role summary
+  if (flowState === "saved" && savedRole) {
+    return (
+      <div className="space-y-6">
+        <div className="rounded-lg border border-green-200 bg-green-50 p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-semibold text-green-800">Target Role</h2>
+              <p className="mt-1 text-sm text-green-700">
+                Your target role is set and ready for skill gap analysis.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleStartEditing}
+              className="rounded-md border border-green-300 bg-white px-4 py-2 text-sm font-medium text-green-700 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+            >
+              Change Role
+            </button>
+          </div>
+        </div>
+
+        {/* Role details card */}
+        <div className="rounded-lg border border-gray-200 bg-white p-6 space-y-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                Role Title
+              </p>
+              <p className="mt-1 text-lg font-semibold text-gray-900">
+                {savedRole.role_title}
+              </p>
+            </div>
+            {!savedRole.is_recognized && (
+              <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-800">
+                Custom Role
+              </span>
+            )}
+          </div>
+
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+              Required Skills ({savedRole.skills.length})
+            </p>
+            {savedRole.skills.length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {savedRole.skills.map((skill) => (
+                  <span
+                    key={skill.skill_name}
+                    className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-3 py-1 text-xs font-medium text-indigo-800"
+                  >
+                    {skill.skill_name}
+                    <span className="text-indigo-500">· {skill.required_proficiency}</span>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-1 text-sm text-gray-500">No skills specified.</p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Post-save success state
   if (flowState === "success" && savedRole) {
     return (
-      <div
-        className="rounded-lg border border-green-200 bg-green-50 p-6 text-center"
-        role="status"
-        aria-live="polite"
-      >
-        <h2 className="text-xl font-semibold text-green-800">Target Role Set Successfully!</h2>
-        <p className="mt-2 text-green-700">
-          Your target role has been set to <strong>{savedRole.role_title}</strong> with{" "}
-          {savedRole.skills.length} required skill{savedRole.skills.length !== 1 ? "s" : ""}.
-        </p>
-        <p className="mt-1 text-sm text-green-600">
-          You can now proceed to run a skill gap analysis.
-        </p>
-        <button
-          type="button"
-          onClick={handleReset}
-          className="mt-4 rounded-md border border-green-300 px-4 py-2 text-sm font-medium text-green-700 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+      <div className="space-y-6">
+        <div
+          className="rounded-lg border border-green-200 bg-green-50 p-6 text-center"
+          role="status"
+          aria-live="polite"
         >
-          Change Target Role
-        </button>
+          <h2 className="text-xl font-semibold text-green-800">Target Role Set Successfully!</h2>
+          <p className="mt-2 text-green-700">
+            Your target role has been set to <strong>{savedRole.role_title}</strong> with{" "}
+            {savedRole.skills.length} required skill{savedRole.skills.length !== 1 ? "s" : ""}.
+          </p>
+          <p className="mt-1 text-sm text-green-600">
+            You can now proceed to run a skill gap analysis.
+          </p>
+          <button
+            type="button"
+            onClick={() => setFlowState("saved")}
+            className="mt-4 rounded-md border border-green-300 px-4 py-2 text-sm font-medium text-green-700 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+          >
+            View Role Details
+          </button>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
+      {/* Back link when changing an existing role */}
+      {targetRole && (
+        <button
+          type="button"
+          onClick={() => setFlowState("saved")}
+          className="flex items-center gap-1 text-sm text-indigo-600 hover:text-indigo-800"
+        >
+          ← Back to current role
+        </button>
+      )}
+
       <section aria-labelledby="target-role-heading">
         <h2 id="target-role-heading" className="mb-4 text-xl font-semibold text-gray-800">
-          Select Your Target Role
+          {targetRole ? "Change Target Role" : "Select Your Target Role"}
         </h2>
         <p className="mb-6 text-sm text-gray-600">
           Enter the role you want to transition to. We&apos;ll identify the skills and
