@@ -178,8 +178,15 @@ async def test_analyze_skill_gaps_parses_well_formed_response(
 async def test_generate_roadmap_parses_well_formed_response(
     provider: OpenAIProvider,
 ) -> None:
+    """Two-stage flow: chat builds the structure, web search adds resources.
+
+    Stage 1 (chat.completions) returns the topic graph without resources.
+    Stage 2 (web search) is mocked to return real resources, and URL
+    verification is mocked to identity so the test stays network-free.
+    """
     topic_id = str(uuid.uuid4())
-    payload = {
+    # Stage 1: structure only — resources are intentionally omitted here.
+    structure_payload = {
         "topics": [
             {
                 "id": topic_id,
@@ -187,16 +194,29 @@ async def test_generate_roadmap_parses_well_formed_response(
                 "category": "critical",
                 "proficiency_target": "intermediate",
                 "prerequisites": [],
-                "resources": [
-                    {"title": "Kubernetes Docs", "type": "documentation", "url": None},
-                    {"title": "K8s Course", "type": "course", "url": "https://example.com"},
-                ],
                 "estimated_hours": 20,
                 "order": 1,
             }
         ]
     }
-    mock_resp = _make_chat_response(json.dumps(payload))
+    # Stage 2: web-search resource curation payload.
+    resources_payload = json.dumps(
+        {
+            "resources": [
+                {
+                    "title": "Kubernetes Documentation",
+                    "type": "documentation",
+                    "url": "https://kubernetes.io/docs/home/",
+                },
+                {
+                    "title": "Kubernetes course",
+                    "type": "course",  # legacy type → normalised to article
+                    "url": "https://example.com/k8s",
+                },
+            ]
+        }
+    )
+    mock_resp = _make_chat_response(json.dumps(structure_payload))
     gaps = [
         SkillGap(
             skill_name="Kubernetes",
@@ -206,8 +226,22 @@ async def test_generate_roadmap_parses_well_formed_response(
         )
     ]
 
-    with patch.object(
-        provider._client.chat.completions, "create", new=AsyncMock(return_value=mock_resp)
+    with (
+        patch.object(
+            provider._client.chat.completions,
+            "create",
+            new=AsyncMock(return_value=mock_resp),
+        ),
+        patch.object(
+            provider,
+            "_respond_with_web_search",
+            new=AsyncMock(return_value=resources_payload),
+        ),
+        patch.object(
+            provider,
+            "_verify_urls",
+            new=AsyncMock(side_effect=lambda resources: resources),
+        ),
     ):
         result = await provider.generate_roadmap(gaps, {"weekly_hours": 10})
 
@@ -215,6 +249,15 @@ async def test_generate_roadmap_parses_well_formed_response(
     assert isinstance(result[0], RoadmapTopic)
     assert result[0].skill_name == "Kubernetes"
     assert len(result[0].resources) == 2
+    # Legacy "course" type is normalised to an allowed type.
+    assert {r.type for r in result[0].resources} <= {
+        "article",
+        "tutorial",
+        "documentation",
+        "video",
+    }
+    # All curated URLs are real links (no null placeholders).
+    assert all(r.url and r.url.startswith("http") for r in result[0].resources)
 
 
 # ── 6. generate_interview_questions ───────────────────────────────────────────

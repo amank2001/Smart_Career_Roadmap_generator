@@ -11,10 +11,12 @@ Each public method:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
 from typing import Any
+from urllib.parse import quote_plus
 
 import httpx
 import openai
@@ -43,6 +45,19 @@ from app.ai.provider import (
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# ── Roadmap resource-curation tuning ──────────────────────────────────────────
+_MIN_RESOURCES = 2          # RoadmapTopic requires at least this many
+_TARGET_RESOURCES = 3       # aim for this many live resources per topic
+_SEARCH_CONCURRENCY = 4     # bound concurrent web-search calls per roadmap
+_URL_VERIFY_TIMEOUT = 6.0   # seconds per URL liveness check
+_MAX_TITLE_LEN = 255        # matches LearningResource.title DB column
+_MAX_URL_LEN = 500          # matches LearningResource.url DB column
+_ALLOWED_RESOURCE_TYPES = {"article", "tutorial", "documentation", "video"}
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
 
 # ── Retry decorator factory ───────────────────────────────────────────────────
 # Retries on transient errors only; validation / auth errors are not retried.
@@ -78,6 +93,21 @@ def _parse_json(raw: str | None, context: str) -> Any:
         raise AIResponseError(
             f"Malformed JSON in AI response for {context}: {exc}"
         ) from exc
+
+
+def _extract_json_object(text: str | None, context: str) -> Any:
+    """Extract the first JSON object embedded in free-form model text.
+
+    Web-search responses may wrap JSON in prose or code fences, so we slice
+    from the first '{' to the last '}' before parsing.
+    """
+    if not text:
+        raise AIResponseError(f"Empty response from AI for {context}")
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise AIResponseError(f"No JSON object found in AI response for {context}")
+    return _parse_json(text[start : end + 1], context)
 
 
 # ── OpenAI Provider ───────────────────────────────────────────────────────────
@@ -258,103 +288,296 @@ class OpenAIProvider:
         gaps: list[SkillGap],
         constraints: dict,
     ) -> list[RoadmapTopic]:
-        """Generate an ordered learning roadmap for the given gaps."""
+        """Generate an ordered learning roadmap for the given gaps.
+
+        Two-stage pipeline:
+          1. Structure — the model designs the topic graph (skills, categories,
+             prerequisites, proficiency targets, hours, ordering) with NO
+             resources. This is pure reasoning and does not touch the web.
+          2. Resource curation — for each topic we run a live web search
+             (Responses API ``web_search`` tool) to fetch real, currently-active
+             study material, then verify every URL resolves before keeping it.
+        """
+        # ── Stage 1: structure only ────────────────────────────────────────
+        structured = await self._generate_roadmap_structure(gaps, constraints)
+
+        # ── Stage 2: web-grounded, verified resources (concurrent) ─────────
+        semaphore = asyncio.Semaphore(_SEARCH_CONCURRENCY)
+
+        async def _attach_resources(item: dict) -> None:
+            async with semaphore:
+                resources = await self._curate_resources(
+                    skill_name=item["skill_name"],
+                    proficiency=item.get("proficiency_target", "beginner"),
+                    category=item.get("category", "important"),
+                )
+            item["resources"] = [r.model_dump() for r in resources]
+
+        await asyncio.gather(*(_attach_resources(item) for item in structured))
+
+        try:
+            return [RoadmapTopic(**item) for item in structured]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise AIResponseError(
+                f"generate_roadmap: invalid structure: {exc}"
+            ) from exc
+
+    # ── Roadmap stage 1: structure ─────────────────────────────────────────
+
+    async def _generate_roadmap_structure(
+        self,
+        gaps: list[SkillGap],
+        constraints: dict,
+    ) -> list[dict]:
+        """Design the roadmap topic graph without resources (reasoning only)."""
         system = (
             "You are a learning roadmap designer. It is currently 2026. "
-            "You work across ALL professional domains — science, technology, engineering, "
-            "medicine, law, finance, commerce, arts, design, education, social sciences, "
-            "humanities, trades, and any other field. "
-            "Return ONLY valid JSON: an object with a 'topics' key containing "
-            "an array of topic objects. Each object must have: "
-            "id (UUID string), skill_name, category (critical|important|nice-to-have), "
+            "You work across ALL professional domains — science, technology, "
+            "engineering, medicine, law, finance, commerce, arts, design, "
+            "education, social sciences, humanities, trades, and any other field. "
+            "Design a well-structured learning roadmap for the given skill gaps. "
+            "Do NOT include learning resources or URLs — those are curated "
+            "separately. Focus purely on structure and sequencing.\n\n"
+            "Return ONLY valid JSON: an object with a 'topics' key containing an "
+            "array of topic objects. Each object must have: "
+            "id (UUID string), skill_name (string), "
+            "category (critical|important|nice-to-have), "
             "proficiency_target (beginner|intermediate|advanced), "
-            "prerequisites (array of UUID strings), "
-            "resources (array of {title, type, url} — exactly 2-3 per topic), "
+            "prerequisites (array of UUID strings referencing other topic ids), "
             "estimated_hours (integer), order (integer starting at 1).\n\n"
-            "RESOURCE RULES:\n"
-            "1. type must be one of: article, tutorial, documentation, video\n"
-            "2. Only suggest FREE, publicly accessible reference material. "
-            "No paid courses, no paywalled content.\n"
-            "3. Match resources to the actual domain of the skill — "
-            "do NOT default to software/tech resources for non-tech skills. "
-            "Examples by domain:\n"
-            "   - Science/Medicine: PubMed (pubmed.ncbi.nlm.nih.gov), "
-            "Khan Academy (khanacademy.org), OpenStax (openstax.org), "
-            "NIH resources (nih.gov), WHO guidelines (who.int)\n"
-            "   - Law/Policy: Cornell LII (law.cornell.edu), "
-            "official government legislation portals\n"
-            "   - Finance/Commerce/Accounting: Investopedia (investopedia.com), "
-            "IRS/HMRC/official tax authority docs, "
-            "AccountingCoach (accountingcoach.com)\n"
-            "   - Arts/Design/Creative: Canva Design School (designschool.canva.com), "
-            "Adobe tutorials (helpx.adobe.com), "
-            "The Art Story (theartstory.org), "
-            "Smithsonian resources (si.edu)\n"
-            "   - Education/Teaching: UNESCO resources (unesco.org), "
-            "Edutopia (edutopia.org)\n"
-            "   - Social Sciences/Psychology: APA (apa.org), "
-            "Simply Psychology (simplypsychology.org)\n"
-            "   - Business/Management: Harvard Business Review free articles "
-            "(hbr.org), MIT OpenCourseWare (ocw.mit.edu)\n"
-            "   - Technology/Software (only when the skill is actually technical): "
-            "official docs (developer.mozilla.org, docs.python.org, etc.), "
-            "freeCodeCamp (freecodecamp.org), roadmap.sh, "
-            "The Odin Project (theodinproject.com), "
-            "YouTube channels: Fireship, Traversy Media, TechWorld with Nana\n"
-            "   - General learning: Wikipedia (en.wikipedia.org) for foundational "
-            "concepts, MIT OpenCourseWare (ocw.mit.edu), "
-            "YouTube educational channels relevant to the field\n"
-            "4. Every URL must be a real, currently working link as of 2026. "
-            "Do NOT invent URLs or hallucinate paths.\n"
-            "5. For YouTube, link to a channel or playlist page, not individual "
-            "video URLs that may expire.\n"
-            "6. Do NOT link to Medium, personal blogs, or content that goes stale.\n"
-            "7. All content must be 2025-2026 relevant. Do not reference deprecated "
-            "or discontinued material.\n"
-            "Order topics so prerequisites appear before dependents, "
-            "critical gaps before important before nice-to-have."
+            "STRUCTURE RULES:\n"
+            "1. Break each skill gap into concrete, learnable topics. Split broad "
+            "gaps into multiple sequential topics when it aids learning.\n"
+            "2. Set prerequisites so foundational topics come before advanced ones. "
+            "Use the ids of earlier topics.\n"
+            "3. estimated_hours must be realistic for the proficiency target "
+            "(typically 4-40 hours per topic).\n"
+            "4. Order topics so prerequisites appear before dependents, and "
+            "critical gaps before important before nice-to-have.\n"
+            "5. proficiency_target should match the depth the role requires."
         )
         gap_data = [g.model_dump() for g in gaps]
         user = (
             f"Skill gaps: {json.dumps(gap_data)}\n"
             f"Constraints: {json.dumps(constraints)}\n"
-            "Generate the learning roadmap."
+            "Design the roadmap structure (no resources)."
         )
         raw = await self._chat(system, user)
-        data = _parse_json(raw, "generate_roadmap")
-        try:
-            items: list[dict] = (
-                data.get("topics", data) if isinstance(data, dict) else data
-            )
-            # Build a mapping from AI-generated IDs to real UUIDs so
-            # prerequisite references stay consistent across topics.
-            id_mapping: dict[str, str] = {}
-            for item in items:
-                original_id = str(item.get("id", ""))
-                real_id = str(uuid.uuid4())
-                id_mapping[original_id] = real_id
-                item["id"] = real_id
-
-            topics = []
-            for item in items:
-                # Remap prerequisite IDs to real UUIDs; drop any that
-                # don't correspond to a topic in this set.
-                raw_prereqs = item.get("prerequisites", [])
-                item["prerequisites"] = [
-                    id_mapping[str(p)]
-                    for p in raw_prereqs
-                    if str(p) in id_mapping
-                ]
-                # Normalise legacy resource types from old AI responses
-                for resource in item.get("resources", []):
-                    if resource.get("type") in ("course", "book"):
-                        resource["type"] = "article"
-                topics.append(RoadmapTopic(**item))
-            return topics
-        except (KeyError, TypeError, ValueError) as exc:
+        data = _parse_json(raw, "generate_roadmap_structure")
+        items: list[dict] = (
+            data.get("topics", data) if isinstance(data, dict) else data
+        )
+        if not isinstance(items, list) or not items:
             raise AIResponseError(
-                f"generate_roadmap: invalid structure: {exc}"
-            ) from exc
+                "generate_roadmap_structure: expected a non-empty 'topics' array"
+            )
+
+        # Remap AI-generated ids to real UUIDs, keeping prerequisite refs consistent.
+        id_mapping: dict[str, str] = {}
+        for item in items:
+            real_id = str(uuid.uuid4())
+            id_mapping[str(item.get("id", ""))] = real_id
+            item["id"] = real_id
+        for item in items:
+            item["prerequisites"] = [
+                id_mapping[str(p)]
+                for p in item.get("prerequisites", [])
+                if str(p) in id_mapping
+            ]
+            item.pop("resources", None)  # ensure stage 2 owns resources
+        return items
+
+    # ── Roadmap stage 2: web-grounded resource curation ────────────────────
+
+    async def _curate_resources(
+        self,
+        skill_name: str,
+        proficiency: str,
+        category: str,
+    ) -> list[LearningResource]:
+        """Return 2-3 real, verified, free learning resources for a topic.
+
+        Uses a live web search, then verifies each URL resolves. Falls back to
+        guaranteed-live search-portal links if too few resources survive.
+        """
+        try:
+            candidates = await self._web_search_resources(skill_name, proficiency)
+        except Exception as exc:  # never fail the whole roadmap on one topic
+            logger.warning(
+                "Resource web-search failed for %r: %s", skill_name, exc
+            )
+            candidates = []
+
+        # Verify liveness and drop dead links; de-duplicate by URL.
+        verified = await self._verify_urls(candidates)
+        seen: set[str] = set()
+        unique: list[LearningResource] = []
+        for res in verified:
+            key = (res.url or "").lower()
+            if key and key in seen:
+                continue
+            seen.add(key)
+            unique.append(res)
+
+        # Guarantee the minimum with always-live fallback search links.
+        if len(unique) < _MIN_RESOURCES:
+            for fb in self._fallback_resources(skill_name):
+                if (fb.url or "").lower() in seen:
+                    continue
+                unique.append(fb)
+                if len(unique) >= _MIN_RESOURCES:
+                    break
+
+        return unique[:_TARGET_RESOURCES]
+
+    async def _web_search_resources(
+        self, skill_name: str, proficiency: str
+    ) -> list[LearningResource]:
+        """Search the live web for free study material for a single skill."""
+        prompt = (
+            "It is 2026. Use web search to find the best FREE, publicly "
+            "accessible, and currently-active learning resources for the "
+            f"skill: '{skill_name}' at {proficiency} level. "
+            "Match the actual domain of the skill (do not default to software "
+            "resources for non-tech skills). Prefer official documentation, "
+            "reputable educational sites, university/open-courseware material, "
+            "and established YouTube channels or playlists. Avoid paywalled "
+            "content, Medium posts, and personal blogs that go stale.\n\n"
+            f"Return {_TARGET_RESOURCES} resources as ONLY a JSON object: "
+            '{"resources": [{"title": string, "type": '
+            '"article"|"tutorial"|"documentation"|"video", "url": string}]}. '
+            "Every url must be a real link you actually found via search."
+        )
+        raw = await self._respond_with_web_search(prompt)
+        data = _extract_json_object(raw, "web_search_resources")
+        items = data.get("resources", []) if isinstance(data, dict) else []
+        resources: list[LearningResource] = []
+        for item in items:
+            res = self._normalize_resource(item)
+            if res is not None:
+                resources.append(res)
+        return resources
+
+    @staticmethod
+    def _normalize_resource(item: dict) -> LearningResource | None:
+        """Coerce a raw resource dict into a valid LearningResource, or None."""
+        if not isinstance(item, dict):
+            return None
+        url = item.get("url")
+        if not url or not isinstance(url, str) or not url.startswith("http"):
+            return None
+        if len(url) > _MAX_URL_LEN:
+            return None  # can't safely truncate a URL; drop it
+        rtype = str(item.get("type", "")).lower()
+        if rtype in ("course", "book"):
+            rtype = "article"
+        if rtype not in _ALLOWED_RESOURCE_TYPES:
+            rtype = "article"
+        title = str(item.get("title") or "Untitled resource")[:_MAX_TITLE_LEN]
+        return LearningResource(title=title, type=rtype, url=url)
+
+    @staticmethod
+    def _fallback_resources(skill_name: str) -> list[LearningResource]:
+        """Guaranteed-live search-portal links used only to meet the minimum."""
+        q = quote_plus(skill_name)
+        return [
+            LearningResource(
+                title=f"{skill_name} — Wikipedia",
+                type="article",
+                url=f"https://en.wikipedia.org/w/index.php?search={q}",
+            ),
+            LearningResource(
+                title=f"{skill_name} — video tutorials (YouTube)",
+                type="video",
+                url=f"https://www.youtube.com/results?search_query={q}+tutorial",
+            ),
+        ]
+
+    async def _respond_with_web_search(self, prompt: str) -> str:
+        """Call the Responses API with the web_search tool; return output text.
+
+        Tries the GA ``web_search`` tool and falls back to the preview tool
+        name if the account/model requires it. Shares the transient-retry
+        behaviour of the chat helper.
+        """
+        tool_types = ("web_search", "web_search_preview")
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            for tool_type in tool_types:
+                try:
+                    response = await self._client.responses.create(
+                        model=self._model,
+                        tools=[{"type": tool_type}],
+                        input=prompt,
+                    )
+                    return response.output_text or ""
+                except openai.BadRequestError as exc:
+                    # Likely an unsupported tool name — try the other variant.
+                    last_exc = exc
+                    logger.warning(
+                        "web_search tool %r rejected: %s", tool_type, exc
+                    )
+                    continue
+                except (openai.APITimeoutError, httpx.TimeoutException) as exc:
+                    last_exc = exc
+                    break  # retry outer loop
+                except (
+                    openai.APIConnectionError,
+                    openai.RateLimitError,
+                    openai.InternalServerError,
+                    httpx.ConnectError,
+                ) as exc:
+                    last_exc = exc
+                    break  # retry outer loop
+                except openai.AuthenticationError as exc:
+                    raise AIUnavailableError(
+                        "OpenAI authentication failed. Check OPENAI_API_KEY."
+                    ) from exc
+            await asyncio.sleep(2 ** (attempt - 1))
+        raise AIUnavailableError(
+            f"web search unavailable after retries: {last_exc}"
+        ) from last_exc
+
+    @staticmethod
+    async def _verify_urls(
+        resources: list[LearningResource],
+    ) -> list[LearningResource]:
+        """Drop resources whose URL clearly does not resolve.
+
+        Conservative by design: only links that fail to connect or return a
+        definitive not-found status (404/410/451) are removed. Ambiguous
+        results (timeouts, bot-blocking 403/405, etc.) are kept.
+        """
+        if not resources:
+            return []
+
+        _DEAD_STATUSES = {404, 410, 451}
+        _RETRY_WITH_GET = {403, 405, 501, 999}
+
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=_URL_VERIFY_TIMEOUT,
+            headers={"User-Agent": _BROWSER_UA},
+        ) as client:
+
+            async def _check(res: LearningResource) -> LearningResource | None:
+                if not res.url:
+                    return None
+                try:
+                    resp = await client.head(res.url)
+                    if resp.status_code in _RETRY_WITH_GET:
+                        resp = await client.get(res.url)
+                    if resp.status_code in _DEAD_STATUSES:
+                        return None
+                    return res
+                except (httpx.ConnectError, httpx.ConnectTimeout):
+                    return None  # host unreachable / DNS failure → dead
+                except Exception:
+                    return res  # ambiguous → keep rather than lose a good link
+
+            results = await asyncio.gather(*(_check(r) for r in resources))
+
+        return [r for r in results if r is not None]
 
     async def generate_interview_questions(
         self,

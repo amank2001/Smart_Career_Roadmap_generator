@@ -100,21 +100,39 @@ class RoadmapService:
 
     @staticmethod
     def _ensure_minimum_resources(topics: list[AIRoadmapTopic]) -> list[AIRoadmapTopic]:
-        """Ensure each topic has at least 2 learning resources.
+        """Defensive net: ensure each topic has at least 2 learning resources.
 
-        If a topic has fewer than 2 resources, pad with a documentation resource.
+        The AI provider already web-curates and verifies resources (and backfills
+        with live search links), so this rarely triggers. When it does, we pad
+        with guaranteed-live search-portal links rather than dead ``url=None``
+        placeholders.
         """
+        from urllib.parse import quote_plus
+
         from app.ai.provider import LearningResource as AILearningResource
 
         for topic in topics:
-            while len(topic.resources) < 2:
-                topic.resources.append(
-                    AILearningResource(
-                        title=f"{topic.skill_name} - Official Documentation",
-                        type="documentation",
-                        url=None,
-                    )
-                )
+            existing_urls = {(r.url or "").lower() for r in topic.resources}
+            q = quote_plus(topic.skill_name)
+            fallbacks = [
+                AILearningResource(
+                    title=f"{topic.skill_name} — Wikipedia",
+                    type="article",
+                    url=f"https://en.wikipedia.org/w/index.php?search={q}",
+                ),
+                AILearningResource(
+                    title=f"{topic.skill_name} — video tutorials (YouTube)",
+                    type="video",
+                    url=f"https://www.youtube.com/results?search_query={q}+tutorial",
+                ),
+            ]
+            for fb in fallbacks:
+                if len(topic.resources) >= 2:
+                    break
+                if (fb.url or "").lower() in existing_urls:
+                    continue
+                topic.resources.append(fb)
+                existing_urls.add((fb.url or "").lower())
         return topics
 
     # ── ORM to schema conversion ──────────────────────────────────────────────
