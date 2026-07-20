@@ -3,9 +3,15 @@
 import { useState } from "react";
 import type { CreateProfileInput, Skill } from "@/lib/api";
 
+interface JobHistoryItem {
+  title?: string;
+  company?: string;
+  years?: number;
+}
+
 interface ExtractedData {
   skills?: string[];
-  job_history?: string[];
+  job_history?: (string | JobHistoryItem)[];
   years_of_experience?: number;
   current_job_title?: string;
 }
@@ -155,7 +161,11 @@ export function ResumeDataConfirmation({
             <ul className="mt-1 space-y-1">
               {extractedData.job_history.map((job, i) => (
                 <li key={i} className="text-sm text-gray-600">
-                  {job}
+                  {typeof job === "string"
+                    ? job
+                    : [job.title, job.company, job.years ? `${job.years} yr${job.years !== 1 ? "s" : ""}` : null]
+                        .filter(Boolean)
+                        .join(" · ")}
                 </li>
               ))}
             </ul>

@@ -273,7 +273,7 @@ async def test_generate_interview_questions_parses_well_formed_response(
             {
                 "id": q_id,
                 "question": "Explain Python GIL.",
-                "category": "technical",
+                "category": "knowledge",
                 "difficulty": "intermediate",
                 "model_answer": "The GIL is ...",
                 "evaluation_criteria": ["Mentions threading", "Explains impact"],
@@ -291,7 +291,7 @@ async def test_generate_interview_questions_parses_well_formed_response(
 
     assert len(result) == 1
     assert isinstance(result[0], InterviewQuestion)
-    assert result[0].category == "technical"
+    assert result[0].category == "knowledge"
     assert len(result[0].evaluation_criteria) == 2
 
 
@@ -330,39 +330,37 @@ async def test_evaluate_interview_answer_parses_well_formed_response(
 async def test_suggest_projects_parses_well_formed_response(
     provider: OpenAIProvider,
 ) -> None:
-    p_id = str(uuid.uuid4())
-    payload = {
-        "projects": [
-            {
-                "id": p_id,
-                "title": "Build a CLI tool",
-                "objectives": ["Learn argparse"],
-                "deliverables": ["Working CLI"],
-                "technologies": ["Python"],
-                "estimated_weeks": 1,
-                "complexity": "beginner",
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "title": "REST API project",
-                "objectives": ["Apply FastAPI"],
-                "deliverables": ["Deployed API"],
-                "technologies": ["Python", "FastAPI"],
-                "estimated_weeks": 2,
-                "complexity": "intermediate",
-            },
-        ]
-    }
-    mock_resp = _make_chat_response(json.dumps(payload))
+    projects = []
+    for complexity in ("beginner", "intermediate", "advanced"):
+        for index in range(3):
+            projects.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "title": f"{complexity.title()} real-world project {index + 1}",
+                    "objectives": [
+                        "2026 problem: Local organizations need a more reliable workflow",
+                        "Measure whether the proposed workflow improves outcomes",
+                    ],
+                    "deliverables": ["Working prototype", "Impact report"],
+                    "technologies": ["Python", "FastAPI"],
+                    "estimated_weeks": min(index + 1, 4),
+                    "complexity": complexity,
+                }
+            )
+    payload = {"projects": projects}
 
     with patch.object(
-        provider._client.chat.completions, "create", new=AsyncMock(return_value=mock_resp)
+        provider._client.chat.completions,
+        "create",
+        new=AsyncMock(return_value=_make_chat_response(json.dumps(payload))),
     ):
         result = await provider.suggest_projects(["Python", "FastAPI"], "beginner")
 
-    assert len(result) == 2
-    assert all(isinstance(p, ProjectSuggestion) for p in result)
-    assert result[0].estimated_weeks == 1
+    assert len(result) == 9
+    assert all(isinstance(project, ProjectSuggestion) for project in result)
+    assert [project.complexity for project in result].count("beginner") == 3
+    assert [project.complexity for project in result].count("intermediate") == 3
+    assert [project.complexity for project in result].count("advanced") == 3
 
 
 # ── 9. Error handling: AITimeoutError ─────────────────────────────────────────

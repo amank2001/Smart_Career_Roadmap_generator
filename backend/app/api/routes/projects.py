@@ -16,6 +16,41 @@ from app.services.project_service import ProjectSuggesterService
 router = APIRouter()
 
 
+# A complete portfolio exposes meaningful choices at every difficulty level.
+_MIN_PROJECTS_PER_COMPLEXITY = 3
+_PROJECT_COMPLEXITIES = ("beginner", "intermediate", "advanced")
+
+
+def _has_balanced_portfolio(projects: list[ProjectSuggestion]) -> bool:
+    """Return whether active suggestions contain at least three of each level."""
+    counts = {complexity: 0 for complexity in _PROJECT_COMPLEXITIES}
+    for project in projects:
+        if project.complexity in counts:
+            counts[project.complexity] += 1
+    return all(
+        counts[complexity] >= _MIN_PROJECTS_PER_COMPLEXITY
+        for complexity in _PROJECT_COMPLEXITIES
+    )
+
+
+async def _get_or_expand_suggestions(
+    service: ProjectSuggesterService,
+    plan_id: UUID,
+    user_skill_level: ProficiencyLevel,
+) -> list[ProjectSuggestion]:
+    """Return a balanced portfolio, preserving and expanding legacy suggestions."""
+    existing = await service.get_suggestions_for_plan(weekly_plan_id=plan_id)
+    if _has_balanced_portfolio(existing):
+        return existing
+
+    generated = await service.suggest_projects(
+        weekly_plan_id=plan_id,
+        user_skill_level=user_skill_level,
+    )
+    # Preserve completed or previously shown work instead of destructively replacing it.
+    return [*existing, *generated]
+
+
 # ── Request body models ────────────────────────────────────────────────────────
 
 
@@ -50,11 +85,11 @@ async def get_suggestions_for_user(
     user_id: UUID = Depends(get_current_user_id),
     service: ProjectSuggesterService = Depends(get_project_service),
 ) -> list[ProjectSuggestion]:
-    """Retrieve AI-generated project suggestions for the authenticated user.
+    """Retrieve a balanced 2026 project portfolio for the authenticated user.
 
     Uses the current in-progress weekly plan if available, otherwise uses
-    the first available plan in the user's roadmap. Returns existing
-    suggestions if already generated, or creates new ones.
+    the first available plan in the user's roadmap. Legacy suggestion sets
+    are expanded without deleting completed or previously shown projects.
     Includes X-Plan-Id header so the client can reference the plan for skip-all.
 
     Requirements: 7.1, 7.2, 7.3, 7.5
@@ -69,15 +104,10 @@ async def get_suggestions_for_user(
             },
         )
 
-    # Surface plan_id to the client via a custom header
     response.headers["X-Plan-Id"] = str(plan_id)
-
-    existing = await service.get_suggestions_for_plan(weekly_plan_id=plan_id)
-    if existing:
-        return existing
-
-    return await service.suggest_projects(
-        weekly_plan_id=plan_id,
+    return await _get_or_expand_suggestions(
+        service=service,
+        plan_id=plan_id,
         user_skill_level=user_skill_level,
     )
 
@@ -93,19 +123,10 @@ async def get_suggestions(
     user_id: UUID = Depends(get_current_user_id),
     service: ProjectSuggesterService = Depends(get_project_service),
 ) -> list[ProjectSuggestion]:
-    """Retrieve AI-generated project suggestions for a specific weekly plan milestone.
-
-    If suggestions already exist for this plan, returns the existing ones.
-    Otherwise, generates new suggestions based on the milestone's skills.
-
-    Requirements: 7.1, 7.2, 7.3, 7.5
-    """
-    existing = await service.get_suggestions_for_plan(weekly_plan_id=plan_id)
-    if existing:
-        return existing
-
-    return await service.suggest_projects(
-        weekly_plan_id=plan_id,
+    """Retrieve or expand a balanced project portfolio for a weekly plan."""
+    return await _get_or_expand_suggestions(
+        service=service,
+        plan_id=plan_id,
         user_skill_level=user_skill_level,
     )
 

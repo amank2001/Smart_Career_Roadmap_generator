@@ -147,14 +147,32 @@ export function ProjectSuggestions() {
       )}
 
       {viewState.status === "success" && (
-        <div className="space-y-4" aria-label="Project suggestions list">
-          {viewState.projects.map((project) => (
-            <ProjectCard
-              key={project.id}
-              project={project}
-              onProjectUpdated={handleProjectUpdated}
-            />
-          ))}
+        <div className="space-y-6" aria-label="Project suggestions list">
+          {(["beginner", "intermediate", "advanced"] as const).map((level) => {
+            const levelProjects = viewState.projects.filter(
+              (p) => p.complexity === level
+            );
+            if (levelProjects.length === 0) return null;
+            return (
+              <section key={level} aria-labelledby={`heading-${level}`}>
+                <h3
+                  id={`heading-${level}`}
+                  className="mb-3 text-lg font-medium capitalize text-gray-700"
+                >
+                  {level} Projects
+                </h3>
+                <div className="space-y-4">
+                  {levelProjects.map((project) => (
+                    <ProjectCard
+                      key={project.id}
+                      project={project}
+                      onProjectUpdated={handleProjectUpdated}
+                    />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
         </div>
       )}
 

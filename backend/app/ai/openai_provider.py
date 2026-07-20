@@ -668,27 +668,41 @@ class OpenAIProvider:
         skills: list[str],
         level: ProficiencyLevel,
     ) -> list[ProjectSuggestion]:
-        """Suggest at least two hands-on projects for the given skills."""
+        """Suggest a balanced portfolio of nine real-world projects for 2026."""
         system = (
             "You are a project mentor covering ALL professional domains — "
             "science, technology, medicine, law, finance, commerce, arts, design, "
             "education, social sciences, trades, and any other field. "
+            "Identify concrete, current problems that people or organizations face "
+            "in 2026 in the actual domain of the supplied skills. Avoid generic "
+            "practice projects, clones, toy apps, and hypothetical problems.\n\n"
             "Return ONLY valid JSON: an object with a 'projects' key containing "
-            "an array of project objects. Each object must have: "
+            "exactly 9 distinct project objects, ordered as 3 beginner, 3 "
+            "intermediate, and 3 advanced projects. Each object must have: "
             "id (UUID string), title (string), objectives (array of strings), "
             "deliverables (array of strings), technologies (array of strings — "
-            "use 'tools', 'methods', or 'materials' relevant to the domain; "
-            "for non-tech fields this might be software tools, lab equipment, "
-            "artistic media, financial models, legal frameworks, etc.), "
-            "estimated_weeks (integer 1-4), complexity (beginner|intermediate|advanced). "
-            "Projects must be practical, hands-on, and appropriate for the specific "
-            "domain of the skills provided. Return at least 2 projects."
+            "use tools, methods, materials, equipment, frameworks, or media "
+            "appropriate to the domain), estimated_weeks (integer 1-4), and "
+            "complexity (beginner|intermediate|advanced).\n\n"
+            "Every project must solve a different real-world 2026 problem and "
+            "produce a usable outcome for a clearly identifiable beneficiary. "
+            "The first objective must start exactly with '2026 problem:' and "
+            "plainly state the problem and who experiences it. Include at least "
+            "2 objectives, 2 concrete deliverables, and 2 relevant "
+            "technologies/tools/methods per project. Beginner projects should be "
+            "small but useful; intermediate projects should integrate multiple "
+            "skills and real constraints; advanced projects should address "
+            "system-level concerns such as scale, reliability, security, "
+            "accessibility, ethics, or measurable impact, while remaining scoped "
+            "as a 1-4 week prototype."
         )
         user = (
             f"Skills: {json.dumps(skills)}\n"
-            f"Skill level: {level}\n"
-            "Suggest practical projects to build these skills. "
-            "Make the projects relevant to the actual field these skills belong to."
+            f"Learner's current skill level: {level}\n"
+            "Use the learner level only to tailor explanations and achievable "
+            "scope; do not change the required 3/3/3 difficulty distribution. "
+            "Prefer problems with clear relevance in 2026 and make each title "
+            "specific to the outcome, not the technology being practised."
         )
         raw = await self._chat(system, user)
         data = _parse_json(raw, "suggest_projects")
@@ -696,11 +710,44 @@ class OpenAIProvider:
             items: list[dict] = (
                 data.get("projects", data) if isinstance(data, dict) else data
             )
-            projects = []
+            projects: list[ProjectSuggestion] = []
             for item in items:
-                # Always generate a proper UUID regardless of what AI returns
+                # Always generate a proper UUID regardless of what AI returns.
                 item["id"] = str(uuid.uuid4())
                 projects.append(ProjectSuggestion(**item))
+
+            required_counts = {
+                "beginner": 3,
+                "intermediate": 3,
+                "advanced": 3,
+            }
+            actual_counts = {name: 0 for name in required_counts}
+            for project in projects:
+                actual_counts[project.complexity] += 1
+                if (
+                    len(project.objectives) < 2
+                    or len(project.deliverables) < 2
+                    or len(project.technologies) < 2
+                ):
+                    raise ValueError(
+                        f"project '{project.title}' must include at least two "
+                        "objectives, deliverables, and technologies/tools"
+                    )
+                if not project.objectives[0].strip().lower().startswith(
+                    "2026 problem:"
+                ):
+                    raise ValueError(
+                        f"project '{project.title}' does not identify its "
+                        "2026 problem"
+                    )
+
+            if len(projects) != 9 or actual_counts != required_counts:
+                raise ValueError(
+                    "expected exactly 9 projects with 3 beginner, 3 intermediate, "
+                    f"and 3 advanced; received {len(projects)} with {actual_counts}"
+                )
+            if len({p.title.strip().casefold() for p in projects}) != 9:
+                raise ValueError("project titles must be distinct")
             return projects
         except (KeyError, TypeError, ValueError) as exc:
             raise AIResponseError(

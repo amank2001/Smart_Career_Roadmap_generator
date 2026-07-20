@@ -406,6 +406,9 @@ class TestProjectOrmToSchema:
         project_orm.technologies = ["Python", "FastAPI", "WebSocket"]
         project_orm.estimated_weeks = 3
         project_orm.complexity = "advanced"
+        project_orm.completed = False
+        project_orm.outcome_description = None
+        project_orm.dismissed = False
 
         schema = ProjectSuggesterService._project_orm_to_schema(project_orm)
 
@@ -416,3 +419,6 @@ class TestProjectOrmToSchema:
         assert schema.technologies == ["Python", "FastAPI", "WebSocket"]
         assert schema.estimated_weeks == 3
         assert schema.complexity == "advanced"
+        assert schema.completed is False
+        assert schema.outcome_description is None
+        assert schema.dismissed is False
