@@ -17,18 +17,18 @@ router = APIRouter()
 
 
 # A complete portfolio exposes meaningful choices at every difficulty level.
-_MIN_PROJECTS_PER_COMPLEXITY = 3
+_MIN_PROJECTS_PER_COMPLEXITY = 2
 _PROJECT_COMPLEXITIES = ("beginner", "intermediate", "advanced")
 
 
 def _has_balanced_portfolio(projects: list[ProjectSuggestion]) -> bool:
-    """Return whether active suggestions contain at least three of each level."""
+    """Return whether active suggestions contain enough projects at each level."""
     counts = {complexity: 0 for complexity in _PROJECT_COMPLEXITIES}
     for project in projects:
         if project.complexity in counts:
             counts[project.complexity] += 1
     return all(
-        counts[complexity] >= _MIN_PROJECTS_PER_COMPLEXITY
+        counts[complexity] >= (1 if complexity == "advanced" else _MIN_PROJECTS_PER_COMPLEXITY)
         for complexity in _PROJECT_COMPLEXITIES
     )
 
@@ -37,6 +37,7 @@ async def _get_or_expand_suggestions(
     service: ProjectSuggesterService,
     plan_id: UUID,
     user_skill_level: ProficiencyLevel,
+    user_id: UUID | None = None,
 ) -> list[ProjectSuggestion]:
     """Return a balanced portfolio, preserving and expanding legacy suggestions."""
     existing = await service.get_suggestions_for_plan(weekly_plan_id=plan_id)
@@ -46,6 +47,7 @@ async def _get_or_expand_suggestions(
     generated = await service.suggest_projects(
         weekly_plan_id=plan_id,
         user_skill_level=user_skill_level,
+        user_id=user_id,
     )
     # Preserve completed or previously shown work instead of destructively replacing it.
     return [*existing, *generated]
@@ -109,6 +111,7 @@ async def get_suggestions_for_user(
         service=service,
         plan_id=plan_id,
         user_skill_level=user_skill_level,
+        user_id=user_id,
     )
 
 
@@ -128,6 +131,7 @@ async def get_suggestions(
         service=service,
         plan_id=plan_id,
         user_skill_level=user_skill_level,
+        user_id=user_id,
     )
 
 

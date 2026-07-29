@@ -136,7 +136,7 @@ class OpenAIProvider:
 
     # ── Internal call helper ──────────────────────────────────────────────────
 
-    async def _chat(self, system_prompt: str, user_prompt: str) -> str:
+    async def _chat(self, system_prompt: str, user_prompt: str, max_tokens: int | None = None) -> str:
         """Call OpenAI chat completions and return the assistant message text.
 
         Wraps tenacity retry inside this helper so that all public methods
@@ -147,7 +147,7 @@ class OpenAIProvider:
             last_exc: Exception | None = None
             for attempt in range(1, 4):  # up to 3 attempts
                 try:
-                    response = await self._client.chat.completions.create(
+                    kwargs: dict = dict(
                         model=self._model,
                         messages=[
                             {"role": "system", "content": system_prompt},
@@ -156,6 +156,9 @@ class OpenAIProvider:
                         response_format={"type": "json_object"},
                         temperature=0.2,
                     )
+                    if max_tokens:
+                        kwargs["max_tokens"] = max_tokens
+                    response = await self._client.chat.completions.create(**kwargs)
                     content = response.choices[0].message.content
                     if content is None:
                         raise AIResponseError("OpenAI returned a null message content")
@@ -585,35 +588,24 @@ class OpenAIProvider:
         skills: list[str],
         difficulty: ProficiencyLevel,
     ) -> list[InterviewQuestion]:
-        """Generate 5-20 mock interview questions for the given role."""
+        """Generate 5 mock interview questions for the given role."""
         system = (
-            "You are an experienced interviewer and career coach covering ALL professional "
-            "domains — science, technology, medicine, law, finance, commerce, arts, design, "
-            "education, social sciences, trades, and any other field. "
-            "Return ONLY valid JSON: an object with a 'questions' key containing "
-            "an array of question objects. Each object must have: "
-            "id (UUID string), question (string), "
+            "You are an experienced interviewer. "
+            "Return ONLY valid JSON: {\"questions\": [...]} with exactly 5 question objects. "
+            "Each object: id (UUID), question (str), "
             "category (knowledge|behavioral|case-study), "
             "difficulty (beginner|intermediate|advanced), "
-            "model_answer (string), evaluation_criteria (array of strings, min 1). "
-            "Category meanings: "
-            "'knowledge' = domain-specific knowledge or conceptual questions relevant to the role "
-            "(replaces 'technical' — applies to any field, e.g. legal principles, accounting rules, "
-            "scientific concepts, design theory); "
-            "'behavioral' = past experience, situational, soft-skills questions; "
-            "'case-study' = scenario-based problem solving relevant to the role "
-            "(e.g. a business case, a patient scenario, a legal scenario, an engineering problem). "
-            "Include at least one question from each applicable category. "
-            "Generate between 5 and 20 questions. "
-            "All questions must be realistic and relevant to the specific role provided."
+            "model_answer (str, 2-3 sentences), evaluation_criteria (array of 2-3 strings). "
+            "Include at least one question from each category. "
+            "All questions must be realistic and specific to the role."
         )
         user = (
             f"Role: {role}\n"
-            f"Relevant skills: {json.dumps(skills)}\n"
-            f"Difficulty level: {difficulty}\n"
-            "Generate mock interview questions appropriate for this role."
+            f"Key skills: {json.dumps(skills[:8])}\n"
+            f"Difficulty: {difficulty}\n"
+            "Generate 5 interview questions."
         )
-        raw = await self._chat(system, user)
+        raw = await self._chat(system, user, max_tokens=1500)
         data = _parse_json(raw, "generate_interview_questions")
         try:
             items: list[dict] = (
@@ -642,19 +634,18 @@ class OpenAIProvider:
     ) -> AnswerFeedback:
         """Evaluate a user's answer and return structured feedback."""
         system = (
-            "You are a rigorous interview coach providing constructive feedback. "
-            "Return ONLY valid JSON with keys: "
-            "strengths (array of strings), "
-            "areas_for_improvement (array of strings), "
-            "overall_assessment (string)."
+            "You are a concise interview coach. "
+            "Return ONLY valid JSON: {\"strengths\": [...], "
+            "\"areas_for_improvement\": [...], \"overall_assessment\": \"...\"}. "
+            "Keep each item to one sentence. Max 3 items per array."
         )
         user = (
-            f"Question: {question}\n"
-            f"Evaluation criteria: {json.dumps(criteria)}\n"
-            f"Candidate answer: {answer}\n"
-            "Evaluate the answer and provide feedback."
+            f"Q: {question}\n"
+            f"Criteria: {json.dumps(criteria)}\n"
+            f"Answer: {answer[:1000]}\n"
+            "Evaluate briefly."
         )
-        raw = await self._chat(system, user)
+        raw = await self._chat(system, user, max_tokens=500)
         data = _parse_json(raw, "evaluate_interview_answer")
         try:
             return AnswerFeedback(**data)
@@ -667,44 +658,38 @@ class OpenAIProvider:
         self,
         skills: list[str],
         level: ProficiencyLevel,
+        current_role: str | None = None,
+        target_role: str | None = None,
     ) -> list[ProjectSuggestion]:
-        """Suggest a balanced portfolio of nine real-world projects for 2026."""
+        """Suggest 5 career-relevant projects tailored to the user's role trajectory."""
+        role_context = ""
+        if current_role:
+            role_context += f"Current role: {current_role}\n"
+        if target_role:
+            role_context += f"Target role: {target_role}\n"
+
         system = (
-            "You are a project mentor covering ALL professional domains — "
-            "science, technology, medicine, law, finance, commerce, arts, design, "
-            "education, social sciences, trades, and any other field. "
-            "Identify concrete, current problems that people or organizations face "
-            "in 2026 in the actual domain of the supplied skills. Avoid generic "
-            "practice projects, clones, toy apps, and hypothetical problems.\n\n"
-            "Return ONLY valid JSON: an object with a 'projects' key containing "
-            "exactly 9 distinct project objects, ordered as 3 beginner, 3 "
-            "intermediate, and 3 advanced projects. Each object must have: "
-            "id (UUID string), title (string), objectives (array of strings), "
-            "deliverables (array of strings), technologies (array of strings — "
-            "use tools, methods, materials, equipment, frameworks, or media "
-            "appropriate to the domain), estimated_weeks (integer 1-4), and "
-            "complexity (beginner|intermediate|advanced).\n\n"
-            "Every project must solve a different real-world 2026 problem and "
-            "produce a usable outcome for a clearly identifiable beneficiary. "
-            "The first objective must start exactly with '2026 problem:' and "
-            "plainly state the problem and who experiences it. Include at least "
-            "2 objectives, 2 concrete deliverables, and 2 relevant "
-            "technologies/tools/methods per project. Beginner projects should be "
-            "small but useful; intermediate projects should integrate multiple "
-            "skills and real constraints; advanced projects should address "
-            "system-level concerns such as scale, reliability, security, "
-            "accessibility, ethics, or measurable impact, while remaining scoped "
-            "as a 1-4 week prototype."
+            "You are a senior career mentor. Suggest projects that directly help "
+            "someone transition from their current role to their target role.\n\n"
+            "CRITICAL RULES:\n"
+            "- Every project MUST be directly relevant to the target role's day-to-day work.\n"
+            "- Use ONLY technologies and tools that are standard in the target role's domain.\n"
+            "- Do NOT suggest projects from unrelated domains (no IoT, hardware, blockchain, "
+            "design tools, etc. unless the target role specifically involves those).\n"
+            "- Projects should build portfolio pieces that demonstrate readiness for the target role.\n\n"
+            "Return ONLY valid JSON: {\"projects\": [...]} with exactly 5 objects "
+            "(2 beginner, 2 intermediate, 1 advanced). Each object: "
+            "id (UUID), title (str), objectives (2+ strings), "
+            "deliverables (2+ strings), technologies (2+ strings relevant to target role), "
+            "estimated_weeks (1-4), complexity (beginner|intermediate|advanced)."
         )
         user = (
-            f"Skills: {json.dumps(skills)}\n"
-            f"Learner's current skill level: {level}\n"
-            "Use the learner level only to tailor explanations and achievable "
-            "scope; do not change the required 3/3/3 difficulty distribution. "
-            "Prefer problems with clear relevance in 2026 and make each title "
-            "specific to the outcome, not the technology being practised."
+            f"{role_context}"
+            f"Skills to practice: {json.dumps(skills)}\n"
+            f"Current skill level: {level}\n"
+            "Suggest projects that would impress a hiring manager for the target role."
         )
-        raw = await self._chat(system, user)
+        raw = await self._chat(system, user, max_tokens=2000)
         data = _parse_json(raw, "suggest_projects")
         try:
             items: list[dict] = (
@@ -712,16 +697,15 @@ class OpenAIProvider:
             )
             projects: list[ProjectSuggestion] = []
             for item in items:
-                # Always generate a proper UUID regardless of what AI returns.
                 item["id"] = str(uuid.uuid4())
                 projects.append(ProjectSuggestion(**item))
 
             required_counts = {
-                "beginner": 3,
-                "intermediate": 3,
-                "advanced": 3,
+                "beginner": 2,
+                "intermediate": 2,
+                "advanced": 1,
             }
-            actual_counts = {name: 0 for name in required_counts}
+            actual_counts = {"beginner": 0, "intermediate": 0, "advanced": 0}
             for project in projects:
                 actual_counts[project.complexity] += 1
                 if (
@@ -731,22 +715,15 @@ class OpenAIProvider:
                 ):
                     raise ValueError(
                         f"project '{project.title}' must include at least two "
-                        "objectives, deliverables, and technologies/tools"
-                    )
-                if not project.objectives[0].strip().lower().startswith(
-                    "2026 problem:"
-                ):
-                    raise ValueError(
-                        f"project '{project.title}' does not identify its "
-                        "2026 problem"
+                        "objectives, deliverables, and technologies"
                     )
 
-            if len(projects) != 9 or actual_counts != required_counts:
+            if len(projects) != 5 or actual_counts != required_counts:
                 raise ValueError(
-                    "expected exactly 9 projects with 3 beginner, 3 intermediate, "
-                    f"and 3 advanced; received {len(projects)} with {actual_counts}"
+                    "expected exactly 5 projects (2 beginner, 2 intermediate, "
+                    f"1 advanced); received {len(projects)} with {actual_counts}"
                 )
-            if len({p.title.strip().casefold() for p in projects}) != 9:
+            if len({p.title.strip().casefold() for p in projects}) != 5:
                 raise ValueError("project titles must be distinct")
             return projects
         except (KeyError, TypeError, ValueError) as exc:

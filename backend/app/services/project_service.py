@@ -69,6 +69,39 @@ class ProjectSuggesterService:
                 skills.append(task.skill_name)
         return skills
 
+    async def _fetch_career_context(self, user_id: UUID) -> tuple[str | None, str | None]:
+        """Fetch the user's current job title and target role title.
+
+        Returns:
+            A tuple of (current_role, target_role) — either may be None.
+        """
+        from app.models.profile import Profile as ProfileORM
+        from app.models.target_role import TargetRole as TargetRoleORM
+
+        current_role: str | None = None
+        target_role: str | None = None
+
+        # Get current job title from profile
+        profile_result = await self._db.execute(
+            select(ProfileORM).where(ProfileORM.user_id == user_id)
+        )
+        profile = profile_result.scalar_one_or_none()
+        if profile and profile.current_job_title:
+            current_role = profile.current_job_title
+
+        # Get target role title
+        target_result = await self._db.execute(
+            select(TargetRoleORM)
+            .where(TargetRoleORM.user_id == user_id)
+            .order_by(TargetRoleORM.created_at.desc())
+            .limit(1)
+        )
+        target = target_result.scalar_one_or_none()
+        if target:
+            target_role = target.role_title
+
+        return current_role, target_role
+
     # ── Public service methods ────────────────────────────────────────────────
 
     async def get_best_plan_id_for_user(self, user_id: UUID) -> UUID | None:
@@ -112,19 +145,21 @@ class ProjectSuggesterService:
         return None
 
     async def suggest_projects(
-        self, weekly_plan_id: UUID, user_skill_level: ProficiencyLevel
+        self, weekly_plan_id: UUID, user_skill_level: ProficiencyLevel,
+        user_id: UUID | None = None,
     ) -> list[ProjectSuggestionSchema]:
-        """Suggest at least 2 projects when a practical milestone is completed.
+        """Suggest projects relevant to the user's career trajectory.
 
-        Extracts skill names from the milestone's tasks, calls the AI provider
-        to generate project suggestions, and persists them to the database.
+        Fetches the user's current role and target role for context, then
+        generates project suggestions aligned to their career path.
 
         Args:
             weekly_plan_id: The ID of the weekly plan (practical milestone).
             user_skill_level: The user's current skill level.
+            user_id: The user's ID for fetching profile/target role context.
 
         Returns:
-            A list of at least 2 ProjectSuggestion schemas.
+            A list of ProjectSuggestion schemas.
         """
         # Load the weekly plan with its tasks
         result = await self._db.execute(
@@ -140,10 +175,19 @@ class ProjectSuggesterService:
         # Extract skills from the milestone's tasks
         skills = self._extract_skills_from_plan(plan)
 
+        # Fetch career context for better relevance
+        current_role: str | None = None
+        target_role: str | None = None
+
+        if user_id:
+            current_role, target_role = await self._fetch_career_context(user_id)
+
         # Call AI provider to generate project suggestions
         ai_suggestions = await self._ai_provider.suggest_projects(
             skills=skills,
             level=user_skill_level,
+            current_role=current_role,
+            target_role=target_role,
         )
 
         # Persist suggestions to DB linked to the weekly_plan_id

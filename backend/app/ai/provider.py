@@ -157,6 +157,8 @@ class AIProvider(Protocol):
         self,
         skills: list[str],
         level: ProficiencyLevel,
+        current_role: str | None = None,
+        target_role: str | None = None,
     ) -> list[ProjectSuggestion]:
-        """Suggest at least two hands-on projects for the given skills."""
+        """Suggest hands-on projects relevant to the user's career trajectory."""
         ...

@@ -1,6 +1,7 @@
 """Authentication routes — register and login."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,10 +25,13 @@ async def register(body: UserCreate, db: AsyncSession = Depends(get_db)) -> dict
             detail={"error": "EMAIL_EXISTS", "message": "A user with this email already exists."},
         )
 
+    # Offload CPU-intensive bcrypt hashing to a thread pool
+    password_hash = await run_in_threadpool(hash_password, body.password)
+
     # Create the user
     user = User(
         email=body.email,
-        password_hash=hash_password(body.password),
+        password_hash=password_hash,
     )
     db.add(user)
     await db.flush()
@@ -43,7 +47,16 @@ async def login(body: UserLogin, db: AsyncSession = Depends(get_db)) -> dict:
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
 
-    if not user or not verify_password(body.password, user.password_hash):
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "INVALID_CREDENTIALS", "message": "Invalid email or password."},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Offload CPU-intensive bcrypt verification to a thread pool
+    is_valid = await run_in_threadpool(verify_password, body.password, user.password_hash)
+    if not is_valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "INVALID_CREDENTIALS", "message": "Invalid email or password."},
